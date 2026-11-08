@@ -6,17 +6,18 @@ import { participationAtStart } from '../hooks/participation'
 const BAND_PROPS = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} }
 
 /** A non-interactive start: records the commands registered and the debug lines; no HOME, so no files. */
-function sdkWorld(on: On, entrypoint: string) {
+function sdkWorld(on: On, entrypoint: string, extraEnv: Record<string, string> = {}) {
   const commands: string[] = []
   const debugLines: string[] = []
 
-  mock.env(on, { CLAUDE_CODE_ENTRYPOINT: entrypoint })
+  mock.env(on, { CLAUDE_CODE_ENTRYPOINT: entrypoint, ...extraEnv })
   mock.store(on)
   mock.clock(on, { now: Date.parse('2026-10-04T09:00:00.000Z') })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.attach', ($, e) => ({ clientId: e.clientId }))
   on('session.id', () => ({ value: 'panel-session' }))
   on('session.cwd', () => ({ value: '/work/repo' }))
+  on('session.root', () => ({ value: '/work/repo' }))
   on('session.surfaces', () => ({ value: [] as never }))
   on('command.register', ($, e) => {
     commands.push(e.name)
@@ -42,6 +43,33 @@ describe('participation at start', () => {
     expect(participationAtStart({ isInteractive: false, entrypoint: 'claude-vscode', surfaces: [] })).toBe('panel')
     expect(participationAtStart({ isInteractive: false, entrypoint: undefined, surfaces: ['vscode'] })).toBe('panel')
     expect(participationAtStart({ isInteractive: false, entrypoint: 'sdk-ts', surfaces: [] })).toBe('off')
+  })
+
+  test('the decision for Desktop: its own session is active, a run from its shell is off', () => {
+    expect(participationAtStart({ isInteractive: false, entrypoint: 'claude-desktop', surfaces: [] })).toBe('active')
+    expect(participationAtStart({ isInteractive: false, entrypoint: 'claude-desktop', surfaces: [], isChildSession: true })).toBe('off')
+  })
+
+  test('a non-interactive start with the Desktop entrypoint takes part: commands registered, band drawn', async ($, on) => {
+    const { commands, debugLines } = sdkWorld(on, 'claude-desktop')
+
+    await $.session.start(SDK_START)
+
+    expect(commands).toEqual(['glossary', 'bearings'])
+    expect(debugLines).toEqual([
+      'session start: isInteractive=false surface=null surfaces=[] entrypoint=claude-desktop participation=active',
+    ])
+    const band = await $.ui.mount({ plugin: 'bearings', surface: 'desktop', component: 'AbovePrompt', props: BAND_PROPS })
+    expect(await band.find({ key: 'open-glossary' })).toBeDefined()
+  })
+
+  test('a claude -p run from a Desktop shell stays off', async ($, on) => {
+    const { commands, debugLines } = sdkWorld(on, 'claude-desktop', { CLAUDE_CODE_CHILD_SESSION: '1' })
+
+    await $.session.start(SDK_START)
+
+    expect(commands).toEqual([])
+    expect(debugLines[0]).toContain('participation=off')
   })
 
   test('a non-interactive start with the VS Code entrypoint takes part: commands registered, no band', async ($, on) => {

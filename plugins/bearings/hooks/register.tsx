@@ -74,6 +74,7 @@ const isBearingsEarlierOpenAtom = atom({ plugin: 'bearings', key: 'isBearingsEar
 const otherSessionsAtom = atom({ plugin: 'bearings', key: 'otherSessions' } as const, [] as SessionSummary[])
 const isOtherSessionsOpenAtom = atom({ plugin: 'bearings', key: 'isOtherSessionsOpen' } as const, false)
 const participationAtom = atom({ plugin: 'bearings', key: 'participation' } as const, 'unknown' as Participation)
+const startedFolderAtom = atom({ plugin: 'bearings', key: 'startedFolder' } as const, null as string | null)
 const printsAtom = atom({ plugin: 'bearings', key: 'prints' } as const, [] as PrintedView[])
 const knownTermsAtom = atom({ plugin: 'bearings', key: 'knownTerms' } as const, [] as string[])
 
@@ -377,7 +378,8 @@ async function logIfNotDone($: EngineInterface, work: () => Promise<WorkOutcome>
  * no pane, one line says it started and one how it ended, then the .md opens as `/bearings` does.
  */
 async function startFromCommand($: EngineInterface, model: string, what: 'rebuild' | 'scan'): Promise<CommandRunResult> {
-  const work = () => (what === 'rebuild' ? rebuild($, model) : scanRepo($, model))
+  await restartIfFolderChanged($, model)
+  const work =() => (what === 'rebuild' ? rebuild($, model) : scanRepo($, model))
   if (await isInVsCodePanel($)) {
     $.ui.log(what === 'rebuild' ? 'rebuilding bearings from the transcript' : 'scanning the repo for bearings')
     $.clock.after(0, () => void finishInPanel($, work))
@@ -535,6 +537,7 @@ async function answerBtwFromBearings($: EngineInterface, model: string, question
 async function submitPaneInput($: EngineInterface, model: string, line: string, isBtw: boolean): Promise<void> {
   const text = line.trim()
   if (text === '') return
+  await restartIfFolderChanged($, model)
 
   const command = parsePaneCommand(text)
   if (command === null) {
@@ -661,6 +664,14 @@ async function startParticipating($: EngineInterface, model: string, cwd: string
     argumentHint: '[print|rebuild|scan]',
   })
   await $.tool.register({ name: 'add', description: ADD_TOOL_DESCRIPTION, inputSchema: ADD_TOOL_SCHEMA })
+  await startInFolder($, model, cwd)
+  ensureOtherSessionsPoll($)
+}
+
+/** Loads what is kept per folder and builds the cold start for that folder. */
+async function startInFolder($: EngineInterface, model: string, cwd: string): Promise<void> {
+  const root = await $.session.root()
+  await update($, startedFolderAtom, () => root)
   await loadKnownTerms($, cwd)
 
   try {
@@ -668,7 +679,20 @@ async function startParticipating($: EngineInterface, model: string, cwd: string
   } catch (error) {
     $.ui.log(`cold start skipped (${(error as Error).message})`)
   }
-  ensureOtherSessionsPoll($)
+}
+
+/**
+ * The desktop app can start a spare session in a neutral folder and assign it to a project later,
+ * so `session.start` may have seen the wrong folder. When the project root has changed since that
+ * start, runs the per-folder start for the real one, before anything writes to its store keys.
+ * It compares the root because a shell `cd` does not move it, and `cwd` would follow one.
+ */
+async function restartIfFolderChanged($: EngineInterface, model: string): Promise<void> {
+  const startedFolder = await read($, startedFolderAtom)
+  if (startedFolder === null) return
+
+  const root = await $.session.root()
+  if (root !== startedFolder) await startInFolder($, model, root)
 }
 
 function openGlossary($: EngineInterface) {
@@ -690,6 +714,7 @@ export const register: Register = (on, options) => {
       isInteractive: e.isInteractive,
       entrypoint: await $.env.get('CLAUDE_CODE_ENTRYPOINT'),
       surfaces: await $.session.surfaces(),
+      isChildSession: (await $.env.get('CLAUDE_CODE_CHILD_SESSION')) !== undefined,
     }
     const participation = participationAtStart(signals)
     await update($, participationAtom, () => participation)
@@ -733,9 +758,10 @@ export const register: Register = (on, options) => {
 
   on('tool.call', { tool: 'mcp__bearings__add' }, async ($, e) => addFromTool($, e as ToolAddInput))
 
-  // turn.start fires for the main thread only; its prompt is kept until the turn completes.
+  // turn.start also fires for subagents; only the main thread's prompt is kept until its turn completes.
   on('turn.start', async ($, e, next) => {
-    if (await isOff($)) return next(e)
+    if (e.agentId !== undefined || (await isOff($))) return next(e)
+    await restartIfFolderChanged($, model)
     await update($, pendingPromptAtom, () => ({ turnId: e.turnId, text: e.text }))
     return next(e)
   })
@@ -889,7 +915,7 @@ export const register: Register = (on, options) => {
         {otherSessions.length > 0 && isOthersOpen && (
           <Markdown text={capText(`## Other sessions here\n\n${sessionSections(otherSessions, now)}`, MARKDOWN_LIMIT)} />
         )}
-        <Button key="rebuild" hotkey="r" label={rebuildLabel(rebuildProgress)} onPress={() => void logIfNotDone($, () => rebuild($, model))} />
+        <Button key="rebuild" hotkey="r" label={rebuildLabel(rebuildProgress)} onPress={() => void logIfNotDone($, async () => { await restartIfFolderChanged($, model); return rebuild($, model) })} />
         {thread.length > 0 && <Markdown text={capText(btwThread(thread), MARKDOWN_LIMIT)} />}
         {pendingQuestion !== null && <Text dimColor>thinking: {pendingQuestion}</Text>}
         {notice !== null && <Text dimColor>{notice}</Text>}

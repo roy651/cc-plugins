@@ -29,7 +29,10 @@ function world(on: On, replies: string[], initialStore: Record<string, unknown> 
   const clock = mock.clock(on, { now: NOW })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 'session-under-test' }))
-  on('session.cwd', () => ({ value: CWD }))
+  const folders = { root: CWD, cwd: CWD }
+  on('session.cwd', () => ({ value: folders.cwd }))
+  on('session.root', () => ({ value: folders.root }))
+  on('ui.open', () => ({ value: { isPlaced: true } as never }))
   on('session.usage', () => ({ value: { startedAt: NOW } }) as never)
   on('session.surfaces', () => ({ value: ['terminal'] as never }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
@@ -50,7 +53,14 @@ function world(on: On, replies: string[], initialStore: Record<string, unknown> 
   on('ui.log', () => ({ value: undefined }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
-  return { calls, written, clock, store }
+  return { calls, written, clock, store, folders }
+}
+
+/** Starts the session the way a desktop spare may: in a neutral folder, assigned to the project afterwards. */
+async function startInSpareThenAssign($: Engine, folders: { root: string }) {
+  folders.root = '/spare'
+  await $.session.start({ cwd: '/spare', surface: null, isInteractive: true })
+  folders.root = CWD
 }
 
 async function finishTurn($: Engine, turnId: string, prompt: string, answer: string) {
@@ -83,6 +93,18 @@ describe('the background update', () => {
   })
 })
 
+test('a subagent starting during a main turn does not replace the main prompt', async ($, on) => {
+  const { calls, clock } = world(on, ['{}'])
+
+  await $.turn.start({ text: 'the main prompt', turnId: 'main-turn' })
+  await $.turn.start({ text: 'the agent prompt', turnId: 'agent-turn', agentId: 'agent-1' })
+  await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, turnId: 'main-turn', reason: 'answer' })
+  await clock.settle()
+
+  expect(calls[0]?.prompt).toContain('the main prompt')
+  expect(calls[0]?.prompt).not.toContain('the agent prompt')
+})
+
 describe('known terms', () => {
   test('a known term is hidden from the glossary pane with a count line, stored per folder, and shown again on unknown', async ($, on) => {
     const { store } = world(on, [])
@@ -109,5 +131,59 @@ describe('known terms', () => {
 
     const pane = await $.ui.mount({ plugin: 'bearings', surface: 'terminal', component: 'Pane', requestId: 'bearings-glossary', props: PANE_PROPS })
     expect(await pane.find({ type: 'Text', text: '1 known term hidden (unknown: <term> shows it)' })).toBeDefined()
+  })
+
+  test('a session started in a spare folder loads the real folder at its first turn and keeps its known terms', async ($, on) => {
+    const { store, folders } = world(on, [], { 'known-terms:/work/repo': ['VM'] })
+    await startInSpareThenAssign($, folders)
+
+    await $.turn.start({ text: 'first prompt', turnId: 'turn-1' })
+    await $.tool.call({ tool: 'mcp__bearings__add', known: 'GPU' })
+
+    expect(store.get('known-terms:/work/repo')).toEqual(['VM', 'GPU'])
+  })
+
+  test('a line typed into a pane before the first turn loads the real folder first', async ($, on) => {
+    const { store, folders } = world(on, [], { 'known-terms:/work/repo': ['VM'] })
+    await startInSpareThenAssign($, folders)
+
+    const pane = await $.ui.mount({ plugin: 'bearings', surface: 'desktop', component: 'Pane', requestId: 'bearings-map', props: PANE_PROPS })
+    await pane.input({ key: 'btw-input', text: 'known: GPU' })
+
+    expect(store.get('known-terms:/work/repo')).toEqual(['VM', 'GPU'])
+  })
+
+  test('/bearings scan before the first turn loads the real folder first', async ($, on) => {
+    const { store, folders, clock } = world(on, [], { 'known-terms:/work/repo': ['VM'] })
+    await startInSpareThenAssign($, folders)
+
+    await $.command.run({ command: 'bearings', args: 'scan', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } })
+    await clock.settle()
+    await $.tool.call({ tool: 'mcp__bearings__add', known: 'GPU' })
+
+    expect(store.get('known-terms:/work/repo')).toEqual(['VM', 'GPU'])
+  })
+
+  test('a subagent turn does not restart the folder', async ($, on) => {
+    const { store, folders } = world(on, [], { 'known-terms:/work/repo': ['VM'] })
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+
+    folders.root = '/worktree/agent'
+    await $.turn.start({ text: 'agent prompt', turnId: 'agent-turn', agentId: 'agent-1' })
+    folders.root = CWD
+    await $.tool.call({ tool: 'mcp__bearings__add', known: 'GPU' })
+
+    expect(store.get('known-terms:/work/repo')).toEqual(['VM', 'GPU'])
+  })
+
+  test('a shell cd does not restart the folder', async ($, on) => {
+    const { store, folders } = world(on, [], { 'known-terms:/work/repo': ['VM'] })
+    await $.session.start({ cwd: CWD, surface: 'terminal', isInteractive: true })
+
+    folders.cwd = '/work/repo/sub'
+    await $.turn.start({ text: 'next prompt', turnId: 'turn-2' })
+    await $.tool.call({ tool: 'mcp__bearings__add', known: 'GPU' })
+
+    expect(store.get('known-terms:/work/repo/sub')).toEqual(['VM', 'GPU'])
   })
 })

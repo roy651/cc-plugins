@@ -110,6 +110,8 @@ declare module 'claude-code' {
       otherSessions: SessionSummary[]
       isOtherSessionsOpen: boolean
       participation: Participation
+      /** The project root the per-folder start last ran for; null before it has run. */
+      startedFolder: string | null
       /** The last 20 printed views, oldest first. */
       prints: PrintedView[]
       /** Terms the operator already knows: hidden from the glossary pane, never pruned. Kept per folder in the store. */

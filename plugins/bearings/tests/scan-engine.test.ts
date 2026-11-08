@@ -48,6 +48,7 @@ function world(on: On, options: WorldOptions = {}) {
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: 'session-under-test' }))
   on('session.cwd', () => ({ value: CWD }))
+  on('session.root', () => ({ value: CWD }))
   on('session.usage', () => ({ value: { startedAt: NOW } }) as never)
   on('session.surfaces', () => ({ value: (options.surfaces ?? ['terminal']) as never }))
   on('session.messages', () => ({ value: (options.transcript ?? []).map(text => ({ role: 'user', text, toolUses: [] })) as never }))
@@ -85,6 +86,10 @@ function world(on: On, options: WorldOptions = {}) {
     return { value: undefined }
   })
   on('ui.open', () => ({ value: { isPlaced: true } as never }))
+  on('session.append', ($, e, next) => {
+    events.push('append')
+    return next(e)
+  })
   return { scanPrompts, rebuildPrompts, events, clock }
 }
 
@@ -159,8 +164,8 @@ describe('when a scan runs', () => {
     await clock.settle()
 
     expect(scanPrompts.length).toBe(0)
-    // The inherited row was attempted (the test kit cannot store a plugin's append), so the cold start got past the trigger.
-    expect(events).toContain('log cold start skipped (no implementation for session.append)')
+    // The inherited row was appended, so the cold start got past the trigger.
+    expect(events).toContain('append')
   })
 
   test('trigger 2: a lean rebuild is followed by one scan', async ($, on) => {

@@ -30,6 +30,7 @@ function interactiveWorld(on: On, files: Record<string, unknown>) {
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.id', () => ({ value: OWN_ID }))
   on('session.cwd', () => ({ value: '/work/repo' }))
+  on('session.root', () => ({ value: '/work/repo' }))
   on('session.usage', () => ({ value: { startedAt: NOW - HOUR } }) as never)
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('tool.register', ($, e) => ({ value: { tool: `mcp__bearings__${e.name}` } }))
@@ -48,31 +49,35 @@ function interactiveWorld(on: On, files: Record<string, unknown>) {
     if (e.to !== 'debug') logs.push(e.text)
     return { value: undefined }
   })
-  return { written, logs }
+  const appended: unknown[] = []
+  on('session.append', ($, e, next) => {
+    appended.push(e.message)
+    return next(e)
+  })
+  return { written, logs, appended }
 }
 
-// The test kit routes no plugin's own $.session.append to a test's hooks (it reaches the bottom,
-// which has no implementation), so these tests see an append only as that failure, which the
-// cold start logs. The row's text is tested in sessions.test.ts (coldStartNote).
-const APPEND_ATTEMPTED = 'cold start skipped (no implementation for session.append)'
-
 test('cold start with no other session active in the last 48 h appends nothing', async ($, on) => {
-  const { logs } = interactiveWorld(on, { 'stale.json': otherSessionFile('stale-session', 49, 'old work') })
+  const { logs, appended } = interactiveWorld(on, { 'stale.json': otherSessionFile('stale-session', 49, 'old work') })
 
   await $.session.start({ cwd: '/work/repo', surface: 'terminal', isInteractive: true })
 
+  expect(appended).toEqual([])
   expect(logs).toEqual([])
 })
 
 test('cold start with another active session appends a row', async ($, on) => {
-  const { logs } = interactiveWorld(on, {
+  const { logs, appended } = interactiveWorld(on, {
     'other.json': otherSessionFile('other-session', 2, 'fix the dashboard'),
     'stale.json': otherSessionFile('stale-session', 49, 'old work'),
   })
 
   await $.session.start({ cwd: '/work/repo', surface: 'terminal', isInteractive: true })
 
-  expect(logs).toEqual([APPEND_ATTEMPTED])
+  expect(appended.length).toBe(1)
+  expect(JSON.stringify(appended[0])).toContain('fix the dashboard')
+  expect(JSON.stringify(appended[0])).not.toContain('old work')
+  expect(logs).toEqual([])
 })
 
 test('every session file carries the signature', async ($, on) => {

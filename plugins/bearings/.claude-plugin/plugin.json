@@ -12,6 +12,18 @@
       "title": "Background model",
       "description": "The model that updates the glossary and bearings after each turn: an alias (sonnet, haiku) or a model id.",
       "default": "sonnet"
+    },
+    "curatorModel": {
+      "type": "string",
+      "title": "Curator model",
+      "description": "The model that corrects the facts' importance every 10 turns: an alias (sonnet, haiku) or a model id.",
+      "default": "haiku"
+    },
+    "ranking": {
+      "type": "string",
+      "title": "Fact ranking",
+      "description": "Who orders the facts in view. mechanical: local scoring. llm: the update call re-ranks a shortlist. Any other value means mechanical.",
+      "default": "mechanical"
     }
   }
 }

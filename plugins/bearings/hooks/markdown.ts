@@ -1,4 +1,6 @@
-import type { Bearings, BearingsField, Fact, GlossaryEntry } from '../types'
+import type { Bearings, BearingsField, Fact, GlossaryEntry, Ranking } from '../types'
+import { EARLIER_SHOWN, factTiers } from './facts'
+import type { FactTiers } from './facts'
 import type { Snapshot } from './merge'
 
 /** A Markdown element draws at most 10000 characters; stay under it with room for the cut note. */
@@ -42,10 +44,25 @@ export function factList(facts: Fact[]): string {
   return facts.map(fact => `- ${fact.text}${fact.source === 'repo' ? FROM_REPO : ''}${pinMark(fact.pin)}`).join('\n')
 }
 
-/** The pane's order: pinned first, then newest seen first (later added first on a tie), so a cut at the end drops the oldest. */
-export function paneFactOrder(facts: Fact[]): Fact[] {
-  const newestFirst = [...facts].reverse().sort((a, b) => b.lastSeenTurn - a.lastSeenTurn)
-  return [...newestFirst.filter(fact => fact.pin !== 'none'), ...newestFirst.filter(fact => fact.pin === 'none')]
+function factSection(title: string, facts: Fact[]): string[] {
+  return facts.length === 0 ? [] : [`## ${title}\n${factList(facts)}`]
+}
+
+/** What the pane and the compaction note show of the facts. A tier with no facts is left out. */
+export function heldFactSections(tiers: FactTiers): string[] {
+  return [...factSection('Hold', tiers.hold), ...factSection('Recent', tiers.recent)]
+}
+
+/** What the .md file and a print show: every tier, in full. */
+function allFactSections(tiers: FactTiers): string[] {
+  return [...heldFactSections(tiers), ...factSection('Earlier', tiers.earlier)]
+}
+
+/** The pane's Earlier list: the top of it, and how many more the .md file holds. */
+export function earlierFactsText(earlier: Fact[]): string {
+  const shown = factList(earlier.slice(0, EARLIER_SHOWN))
+  const moreCount = earlier.length - EARLIER_SHOWN
+  return moreCount > 0 ? `${shown}\n\n_${moreCount} more in the file._` : shown
 }
 
 /** "changed 3 turns ago" style, for a field that last changed at `changedAt`. */
@@ -56,10 +73,10 @@ export function changedAgo(changedAt: number, currentTurn: number): string {
 }
 
 /**
- * The Bearings sections in the order of the Bearings shape, with the facts given separately (recent ones in the pane).
+ * The Bearings sections in the order of the Bearings shape, followed by the fact sections the caller picked.
  * With `currentTurn` (the pane), each heading whose field records a change says how long ago it changed.
  */
-export function bearingsSections(bearings: Bearings, facts: Fact[], currentTurn?: number): string {
+export function bearingsSections(bearings: Bearings, factSections: string[], currentTurn?: number): string {
   const repoFields = bearings.repoFields ?? []
   const mark = (field: BearingsField) => (repoFields.includes(field) ? FROM_REPO : '')
   const heading = (title: string, field: BearingsField) => {
@@ -74,14 +91,15 @@ export function bearingsSections(bearings: Bearings, facts: Fact[], currentTurn?
     `${heading('In progress', 'inProgress')}\n${bulletList(bearings.inProgress, mark('inProgress'))}`,
     `${heading('Expected next', 'expectedNext')}\n${bulletList(bearings.expectedNext, mark('expectedNext'))}`,
     `${heading('Open decisions', 'openDecisions')}\n${bulletList(bearings.openDecisions, mark('openDecisions'))}`,
-    `## Facts to hold\n${factList(facts)}`,
+    ...factSections,
   ].join('\n\n')
 }
 
 /** The Bearings half of the session's .md file. */
-export function bearingsFileSection(snapshot: Snapshot): string {
+export function bearingsFileSection(snapshot: Snapshot, ranking: Ranking): string {
   const bearings = snapshot.bearings
-  return `# Bearings\n\n${bearings === null ? '_No bearings yet._' : bearingsSections(bearings, bearings.facts)}\n`
+  if (bearings === null) return '# Bearings\n\n_No bearings yet._\n'
+  return `# Bearings\n\n${bearingsSections(bearings, allFactSections(factTiers(bearings, bearings.updatedAtTurn, ranking)))}\n`
 }
 
 /** The Glossary half of the session's .md file. */
@@ -90,12 +108,12 @@ export function glossaryFileSection(snapshot: Snapshot): string {
 }
 
 /** The readable file and the text handed to the model: Bearings first, then the whole Glossary. */
-export function snapshotMarkdown(snapshot: Snapshot): string {
-  return `${bearingsFileSection(snapshot)}\n${glossaryFileSection(snapshot)}`
+export function snapshotMarkdown(snapshot: Snapshot, ranking: Ranking): string {
+  return `${bearingsFileSection(snapshot, ranking)}\n${glossaryFileSection(snapshot)}`
 }
 
-export function viewSection(view: 'glossary' | 'bearings', snapshot: Snapshot): string {
-  return view === 'glossary' ? glossaryFileSection(snapshot) : bearingsFileSection(snapshot)
+export function viewSection(view: 'glossary' | 'bearings', snapshot: Snapshot, ranking: Ranking): string {
+  return view === 'glossary' ? glossaryFileSection(snapshot) : bearingsFileSection(snapshot, ranking)
 }
 
 /** What `/glossary print` answers: the model reads it, so it stays about ten tokens. */
@@ -120,8 +138,8 @@ export function printDrawing(markdown: string, markdownPath: string | null): str
 export const PRINTED_VIEW_LIMIT = 8000
 
 /** The text of a printed view: the view's part of the .md file, cut with a last line naming the file. */
-export function printedView(view: 'glossary' | 'bearings', snapshot: Snapshot, markdownPath: string | null): string {
-  const text = viewSection(view, snapshot)
+export function printedView(view: 'glossary' | 'bearings', snapshot: Snapshot, markdownPath: string | null, ranking: Ranking): string {
+  const text = viewSection(view, snapshot, ranking)
   if (text.length <= PRINTED_VIEW_LIMIT) return text
   const where = markdownPath ?? "this session's .md file"
   return `${text.slice(0, PRINTED_VIEW_LIMIT)}\n\n... cut at ${PRINTED_VIEW_LIMIT} characters. The rest is in ${where}`

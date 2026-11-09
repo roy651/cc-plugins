@@ -64,7 +64,7 @@ describe('applyDelta bearings', () => {
 
   test('factsAdd adds once, factsSeen touches', () => {
     const before: Snapshot = { glossary: [], bearings: emptyBearings() }
-    const first = applyDelta(before, delta({}, { factsAdd: ['Temperature is 0.1', 'temperature is 0.1'] }), 2)
+    const first = applyDelta(before, delta({}, { factsAdd: [{ text: 'Temperature is 0.1', importance: 1 }, { text: 'temperature is 0.1', importance: 1 }] }), 2)
     expect(first.bearings?.facts.length).toBe(1)
     const second = applyDelta(first, delta({}, { factsSeen: ['Temperature is 0.1'] }), 8)
     expect(second.bearings?.facts[0]?.lastSeenTurn).toBe(8)
@@ -98,7 +98,10 @@ describe('rebuild helpers', () => {
         entry('MINE', 'operator meaning', { source: 'operator' }),
         entry('SAME', 'known term', { firstTurn: 3 }),
       ],
-      bearings: { ...emptyBearings(), goal: 'old goal', facts: [{ text: 'kept fact', lastSeenTurn: 1, pin: 'session', source: 'auto' }, { text: 'dropped fact', lastSeenTurn: 1, pin: 'none', source: 'auto' }] },
+      bearings: { ...emptyBearings(), goal: 'old goal', facts: [
+        { id: 'f1', text: 'kept fact', lastSeenTurn: 1, pin: 'session', source: 'auto', importance: 1, mentions: 0 },
+        { id: 'f2', text: 'dropped fact', lastSeenTurn: 1, pin: 'none', source: 'auto', importance: 1, mentions: 0 },
+      ] },
     }
     const start = protectedOnly(before)
     expect(start.glossary.map(one => one.term)).toEqual(['KEEP', 'MINE'])

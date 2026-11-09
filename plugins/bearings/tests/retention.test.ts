@@ -33,7 +33,7 @@ test('"new" means first seen in the last 3 turns, never inherited', () => {
 })
 
 function factSeenAt(text: string, lastSeenTurn: number, extra: Partial<Fact> = {}): Fact {
-  return { text, lastSeenTurn, pin: 'none', source: 'auto', ...extra }
+  return { id: `id of ${text}`, text, lastSeenTurn, pin: 'none', source: 'auto', importance: 1, mentions: 0, ...extra }
 }
 
 test('an automatic term or fact unseen for 30 turns is deleted; at 29 it stays', () => {

@@ -1,5 +1,6 @@
+import type { Fact, Ranking } from '../types'
+import { factsForUpdate, HOLD_LIMIT, IMPORTANCE_GUIDE, mechanicalTiers, RECENT_LIMIT, shortlist } from './facts'
 import type { Snapshot } from './merge'
-import { RECENT_TURNS } from './retention'
 import type { ScanSource } from './scan'
 
 /** One finished main-thread turn, as the background update reads it. */
@@ -12,7 +13,14 @@ export interface TurnText {
 /** Each side of a turn is capped before it reaches the background model. */
 export const TURN_TEXT_LIMIT = 6000
 
-const DELTA_SHAPE = `{
+const FACTS_ADD_FIELD = '"factsAdd": [{ "text": "...", "importance": 1 }]'
+const FACTS_SEEN_FIELD = '"factsSeen": ["f12"]'
+const FACTS_REPLACE_FIELD = '"factsReplace": [{ "id": "f12", "text": "...", "importance": 2 }]'
+const FACTS_RANK_FIELD = '"factsRank": { "hold": ["f12"], "recent": ["f9"] }'
+
+/** The delta's shape, with only the fact fields this call may answer. */
+function deltaShape(factFields: string[]): string {
+  return `{
   "glossary": {
     "upsert": [{ "term": "...", "meaning": "..." }],
     "seen": ["term"]
@@ -24,10 +32,10 @@ const DELTA_SHAPE = `{
     "inProgress": ["..."],
     "expectedNext": ["..."],
     "openDecisions": ["..."],
-    "factsAdd": ["..."],
-    "factsSeen": ["..."]
+${factFields.map(field => `    ${field}`).join(',\n')}
   }
 }`
+}
 
 const RULES = `Rules:
 - Take every meaning only from the conversation text. If a term's meaning is not stated there, write "meaning not stated in the conversation". Never invent a meaning.
@@ -37,33 +45,51 @@ const RULES = `Rules:
 - Open decisions are only questions the assistant asked the operator that the operator has not answered yet.
 - Facts are things to hold in mind while working (numbers, paths, constraints, agreed choices).
 - Lists go oldest first, newest last.
-- "subGoals" and "expectedNext" hold at most 10 items each: drop items that are done and merge near-duplicates.`
+- "subGoals" and "expectedNext" hold at most 10 items each: drop items that are done and merge near-duplicates.
+- ${IMPORTANCE_GUIDE}`
 
-export const UPDATE_SYSTEM = `You keep a glossary and a map of where the work stands for a person who follows a long working conversation between an operator and an AI assistant, and who often steps away.
+const FACTS_ADD_AND_SEEN_RULE = `- "factsAdd": new facts, each with its importance. "factsSeen": the ids of known facts the new turns rely on again.`
+const FACTS_REPLACE_RULE = `- "factsReplace": a known fact the new turns correct or sharpen: its id, the new text and its importance.`
+const FACTS_RANK_RULE = `- "factsRank": the ids from "facts" to keep in view, most useful first: at most ${HOLD_LIMIT} in "hold" for what to keep in mind throughout, at most ${RECENT_LIMIT} in "recent" for what matters right now. Always include "factsRank" in every reply, as the exception to "Include any other field only when it changes": restate it even when the order has not changed.`
+
+/** The system prompt of the calls that read the conversation. Only the fact fields they may answer differ. */
+function conversationSystem(factFields: string[], factRules: string[]): string {
+  return `You keep a glossary and a map of where the work stands for a person who follows a long working conversation between an operator and an AI assistant, and who often steps away.
 
 You receive the current glossary's terms (names only, without their meanings) and the map as JSON, and the newest turn or turns of the conversation. Answer with one JSON object and nothing else: a delta in this shape.
 
-${DELTA_SHAPE}
+${deltaShape(factFields)}
 
 - "upsert": terms that are new, or whose meaning the new turns state or change.
 - "seen": known terms the new turns mention without changing their meaning.
 - In "bearings", always include "inProgress", restated from the newest turns even when it has not changed. Include any other field only when it changes. A list you include replaces the old list whole.
-- The map's "facts" holds only the facts seen in the last 30 turns, and "olderFactCount" counts the rest.
-- "factsAdd": new facts. "factsSeen": known facts the new turns rely on again, quoted exactly.
+- The map's "facts" holds the facts most in view, each as \`f12 (3): text\` (id, importance, text), and "olderFactCount" counts the rest.
+${factRules.join('\n')}
 
 ${RULES}`
+}
+
+const UPDATE_FACT_FIELDS = [FACTS_ADD_FIELD, FACTS_SEEN_FIELD, FACTS_REPLACE_FIELD]
+const UPDATE_FACT_RULES = [FACTS_ADD_AND_SEEN_RULE, FACTS_REPLACE_RULE]
+
+export const UPDATE_SYSTEM = conversationSystem(UPDATE_FACT_FIELDS, UPDATE_FACT_RULES)
+export const RANKING_UPDATE_SYSTEM = conversationSystem([...UPDATE_FACT_FIELDS, FACTS_RANK_FIELD], [...UPDATE_FACT_RULES, FACTS_RANK_RULE])
+export const REBUILD_SYSTEM = conversationSystem([FACTS_ADD_FIELD, FACTS_SEEN_FIELD], [FACTS_ADD_AND_SEEN_RULE])
+
+export function updateSystem(ranking: Ranking): string {
+  return ranking === 'llm' ? RANKING_UPDATE_SYSTEM : UPDATE_SYSTEM
+}
 
 function cap(text: string): string {
   return text.length <= TURN_TEXT_LIMIT ? text : `${text.slice(0, TURN_TEXT_LIMIT)} ... (cut)`
 }
 
 /**
- * The glossary and map as the background model reads them, kept small: term names without
- * meanings, the facts seen in the last 30 turns in full and the older ones as a count.
+ * The glossary and map as the background model reads them, kept small: term names
+ * without meanings, the facts the caller picked with their ids, and the rest as a count.
  */
-function currentStateJson(snapshot: Snapshot, currentTurn: number): string {
+function currentStateJson(snapshot: Snapshot, shownFacts: Fact[]): string {
   const bearings = snapshot.bearings
-  const recentFacts = (bearings?.facts ?? []).filter(fact => currentTurn - fact.lastSeenTurn < RECENT_TURNS)
   return JSON.stringify({
     glossaryTerms: snapshot.glossary.map(entry => entry.term),
     bearings: bearings === null ? null : {
@@ -73,17 +99,24 @@ function currentStateJson(snapshot: Snapshot, currentTurn: number): string {
       inProgress: bearings.inProgress,
       expectedNext: bearings.expectedNext,
       openDecisions: bearings.openDecisions,
-      facts: recentFacts.map(fact => fact.text),
-      olderFactCount: bearings.facts.length - recentFacts.length,
+      facts: shownFacts.map(fact => `${fact.id} (${fact.importance}): ${fact.text}`),
+      olderFactCount: bearings.facts.length - shownFacts.length,
     },
   })
 }
 
-export function updatePrompt(snapshot: Snapshot, turns: TurnText[], currentTurn: number): string {
+/** Rebuild and scan read the shortlist, whatever the ranking setting. */
+function shortlistJson(snapshot: Snapshot, currentTurn: number): string {
+  const shown = snapshot.bearings === null ? [] : shortlist(mechanicalTiers(snapshot.bearings.facts, currentTurn))
+  return currentStateJson(snapshot, shown)
+}
+
+export function updatePrompt(snapshot: Snapshot, turns: TurnText[], currentTurn: number, ranking: Ranking): string {
+  const shown = snapshot.bearings === null ? [] : factsForUpdate(snapshot.bearings, currentTurn, ranking)
   const turnBlocks = turns.map(turn =>
     `<turn number="${turn.turn}">\n<operator>\n${cap(turn.prompt)}\n</operator>\n<assistant>\n${cap(turn.answer)}\n</assistant>\n</turn>`,
   )
-  return `<current>\n${currentStateJson(snapshot, currentTurn)}\n</current>\n\n<new_turns>\n${turnBlocks.join('\n')}\n</new_turns>\n\nAnswer with the JSON delta only.`
+  return `<current>\n${currentStateJson(snapshot, shown)}\n</current>\n\n<new_turns>\n${turnBlocks.join('\n')}\n</new_turns>\n\nAnswer with the JSON delta only.`
 }
 
 /** One message of the transcript as the rebuild reads it: who wrote it and its text, nothing else. */
@@ -142,7 +175,7 @@ export function transcriptChunks(messages: TranscriptMessage[], limit = REBUILD_
 
 /** One step of a rebuild: the state so far and the next piece of the transcript, answered as a delta. */
 export function rebuildChunkPrompt(snapshot: Snapshot, chunk: string, index: number, total: number, currentTurn: number): string {
-  return `<current>\n${currentStateJson(snapshot, currentTurn)}\n</current>\n\n<transcript_part number="${index + 1}" of="${total}">\n${chunk}\n</transcript_part>\n\nThis is part ${index + 1} of ${total} of the whole conversation, in order. Answer with the JSON delta only.`
+  return `<current>\n${shortlistJson(snapshot, currentTurn)}\n</current>\n\n<transcript_part number="${index + 1}" of="${total}">\n${chunk}\n</transcript_part>\n\nThis is part ${index + 1} of ${total} of the whole conversation, in order. Answer with the JSON delta only.`
 }
 
 export function btwPrompt(question: string): string {
@@ -176,7 +209,7 @@ export const SCAN_SYSTEM = `You keep a glossary and a map of where the work stan
 
 You receive the current glossary's terms (names only) and the map as JSON, and the repository's own notes: a handoff file, instruction files, the README, recent commits, uncommitted changes and the top-level files. Deduce from them the goal, sub-goals, what is in progress, what is expected next, and facts to hold, and take glossary terms that these files define. Answer with one JSON object and nothing else: a delta in this shape.
 
-${DELTA_SHAPE}
+${deltaShape([FACTS_ADD_FIELD, FACTS_SEEN_FIELD])}
 
 - Fill only what the files support; leave a field out when they say nothing about it.
 - "seen" and "factsSeen": leave empty.
@@ -188,5 +221,5 @@ export function scanPrompt(snapshot: Snapshot, sources: ScanSource[], currentTur
   const blocks = sources.map(source =>
     `<source name="${source.name}"${source.isCut === true ? ' cut="true"' : ''}>\n${source.text}\n</source>`,
   )
-  return `<current>\n${currentStateJson(snapshot, currentTurn)}\n</current>\n\n<repo>\n${blocks.join('\n')}\n</repo>\n\nAnswer with the JSON delta only.`
+  return `<current>\n${shortlistJson(snapshot, currentTurn)}\n</current>\n\n<repo>\n${blocks.join('\n')}\n</repo>\n\nAnswer with the JSON delta only.`
 }

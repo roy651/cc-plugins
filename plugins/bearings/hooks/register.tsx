@@ -2,26 +2,27 @@ import { atom, read, update } from 'claude-code'
 import type { CommandRunResult, EngineInterface, ModelForkResult, Register } from 'claude-code'
 
 import type {
-  Bearings, BtwExchange, GlossaryEntry, Participation, PendingPrompt, PrintedView, SessionSummary, UpdateStats,
+  Bearings, BtwExchange, GlossaryEntry, Participation, PendingPrompt, PrintedView, Ranking, SessionSummary, UpdateStats,
 } from '../types'
 import {
   applyKnownCommand, applyPaneCommand, applyToolAdd, COMMAND_HELP, isKnownCommand, knownTermsKey, parsePaneCommand,
   toolKnownCommand,
 } from './commands'
 import type { KnownCommand, ToolAddInput } from './commands'
+import { CURATOR_SYSTEM, curatorPrompt, factsForUpdate, factTiers, isCuratorDue, normalizeFacts } from './facts'
 import {
-  bearingsSections, capText, factList, glossaryList, MARKDOWN_LIMIT, paneFactOrder, printDrawing, printedView, printNumberOf, printStub,
+  bearingsSections, capText, earlierFactsText, glossaryList, heldFactSections, MARKDOWN_LIMIT, printDrawing, printedView, printNumberOf, printStub,
   relativeTime, snapshotMarkdown, viewSection,
 } from './markdown'
 import {
-  emptyBearings, isLean, mergeProjectPins, projectPinsKey, projectPinsOf, protectedOnly, restoreFirstTurns,
+  emptyBearings, isLean, keepHighestFactId, mergeProjectPins, projectPinsKey, projectPinsOf, protectedOnly, restoreFirstTurns,
 } from './merge'
 import type { ProjectPins, Snapshot } from './merge'
 import { appendBounded, bearingsFolder, failureLogPath, firstLine, readSessionFiles, saveSession } from './persist'
 import type { FileAccess, SavedSession } from './persist'
 import {
-  BTW_FALLBACK_MARK, BTW_FALLBACK_MESSAGES, btwFallbackPrompt, btwPrompt, rebuildChunkPrompt, scanPrompt, SCAN_SYSTEM,
-  transcriptChunks, updatePrompt, UPDATE_SYSTEM,
+  BTW_FALLBACK_MARK, BTW_FALLBACK_MESSAGES, btwFallbackPrompt, btwPrompt, rebuildChunkPrompt, REBUILD_SYSTEM, scanPrompt, SCAN_SYSTEM,
+  transcriptChunks, updatePrompt, updateSystem,
 } from './prompts'
 import type { TranscriptMessage, TurnText } from './prompts'
 import { isVsCodePanel, participationAtStart } from './participation'
@@ -34,7 +35,7 @@ import {
 import { FILE_LIST_SOURCE, fitToBudget, GIT_LOG_SOURCE, GIT_STATUS_SOURCE, pickReadme, SCAN_FILES } from './scan'
 import type { ScanSource } from './scan'
 import {
-  addUsage, applyBackgroundUpdate, applyScanReply, applyUpdateReply, describeFailure, emptyStats, failureLogLine,
+  addUsage, applyBackgroundUpdate, applyCuratorReply, applyRebuildReply, applyScanReply, describeFailure, emptyStats, failureLogLine,
 } from './update'
 import type { ReplyOutcome } from './update'
 
@@ -44,6 +45,7 @@ import type { ReplyOutcome } from './update'
 // are plain functions.
 
 const DEFAULT_MODEL = 'sonnet'
+const DEFAULT_CURATOR_MODEL = 'haiku'
 const GLOSSARY_PANE = 'bearings-glossary'
 const BEARINGS_PANE = 'bearings-map'
 
@@ -90,6 +92,9 @@ const updates = createSerialQueue<TurnText>()
 // A hot reload drops the module's timers and resets this flag, so the next turn starts the poll again.
 let isPollingOtherSessions = false
 
+// The `ranking` option, set by `register`. Options are fixed for one load, and many functions that write or draw the facts need it.
+let factRanking: Ranking = 'mechanical'
+
 const ADD_TOOL_DESCRIPTION =
   'Adds a term with its meaning, or a fact, to the Bearings glossary and map the operator reads in a side pane. ' +
   'Call it only when the operator asks you to add, note or pin something there. ' +
@@ -112,8 +117,18 @@ const ADD_TOOL_SCHEMA = {
 // -------------------------------------------------------------------------
 // State: the glossary and bearings as one snapshot, the files, the project pins
 
+/**
+ * The Bearings with every fact normalized. Whatever route old facts came in by (a resumed file or
+ * a value kept across a hot reload), they pass here before anything uses them. Ids given here
+ * follow the stored order, so each read gives the same ones until a write stores them.
+ */
+async function readBearings($: EngineInterface): Promise<Bearings | null> {
+  const stored = await read($, bearingsAtom)
+  return stored === null ? null : normalizeFacts(stored)
+}
+
 async function readSnapshot($: EngineInterface): Promise<Snapshot> {
-  return { glossary: await read($, glossaryAtom), bearings: await read($, bearingsAtom) }
+  return { glossary: await read($, glossaryAtom), bearings: await readBearings($) }
 }
 
 /** Reads both values, applies `change`, writes both. Slow work (model calls) happens before, so the read is fresh. */
@@ -170,7 +185,7 @@ async function saveFiles($: EngineInterface): Promise<void> {
     stats: await read($, statsAtom),
   }
   try {
-    await saveSession(place.files, place.folder, saved, snapshotMarkdown(snapshot))
+    await saveSession(place.files, place.folder, saved, snapshotMarkdown(snapshot, factRanking))
   } catch (error) {
     $.ui.log(`could not write ${place.folder}: ${(error as Error).message}`)
   }
@@ -191,7 +206,7 @@ async function applyKnown($: EngineInterface, command: KnownCommand): Promise<st
 }
 
 /** Appends one line to the session's failure log. A failed write is logged, never thrown. */
-async function logFailure($: EngineInterface, what: string, turn: number, failure: string, reply: ModelForkResult): Promise<void> {
+async function logFailure($: EngineInterface, what: string, turn: number, failure: string, reply: ModelForkResult | null): Promise<void> {
   const place = await sessionFolder($, await $.session.cwd())
   if (place === null) return
   const path = failureLogPath(place.folder, await $.session.id())
@@ -286,24 +301,67 @@ async function coldStart($: EngineInterface, model: string, cwd: string): Promis
 // -------------------------------------------------------------------------
 // The three model calls: background update, rebuild, btw
 
-async function runUpdate($: EngineInterface, model: string, turns: TurnText[]): Promise<void> {
+/** The model settings of the update that runs after each turn. */
+interface UpdateSettings {
+  model: string
+  curatorModel: string
+  ranking: Ranking
+}
+
+async function runUpdate($: EngineInterface, settings: UpdateSettings, turns: TurnText[]): Promise<void> {
   const latestTurn = turns[turns.length - 1]?.turn ?? 0
   await update($, isUpdatingAtom, () => true)
   try {
+    const before = await readSnapshot($)
     const reply = await $.model.complete({
-      model,
-      system: UPDATE_SYSTEM,
-      prompt: updatePrompt(await readSnapshot($), turns, latestTurn),
+      model: settings.model,
+      system: updateSystem(settings.ranking),
+      prompt: updatePrompt(before, turns, latestTurn, settings.ranking),
       maxTokens: BACKGROUND_MAX_TOKENS,
     })
-    const knownTerms = await read($, knownTermsAtom)
+
+    const shownFacts = before.bearings === null ? [] : factsForUpdate(before.bearings, latestTurn, settings.ranking)
+    const context = {
+      knownTerms: await read($, knownTermsAtom),
+      ranking: settings.ranking,
+      shownFactIds: new Set(shownFacts.map(fact => fact.id)),
+      turnText: turns.map(turn => `${turn.prompt}\n${turn.answer}`).join('\n'),
+    }
     const failure = await applyOutcome(
-      $, 'update', (snapshot, stats) => applyBackgroundUpdate(snapshot, stats, reply, latestTurn, knownTerms),
+      $, 'update', (snapshot, stats) => applyBackgroundUpdate(snapshot, stats, reply, latestTurn, context),
     )
     if (failure !== null) await logFailure($, 'update', latestTurn, failure, reply)
+
+    await runCuratorIfDue($, settings.curatorModel, latestTurn)
   } finally {
     await update($, isUpdatingAtom, () => false)
   }
+}
+
+/** The curated turn advances before the call, so a failure does not retry every turn. */
+async function runCuratorIfDue($: EngineInterface, curatorModel: string, turn: number): Promise<void> {
+  const bearings = await readBearings($)
+  if (bearings === null || !isCuratorDue(bearings, turn)) return
+
+  await changeSnapshot($, snapshot => (snapshot.bearings === null ? snapshot : { ...snapshot, bearings: { ...snapshot.bearings, lastCuratedTurn: turn } }))
+  let reply: ModelForkResult
+  try {
+    reply = await $.model.complete({
+      model: curatorModel,
+      system: CURATOR_SYSTEM,
+      prompt: curatorPrompt(bearings, turn),
+      maxTokens: BACKGROUND_MAX_TOKENS,
+    })
+  } catch (error) {
+    // The engine rejects a call it refuses to send, such as a blocked `curatorModel`.
+    const failure = `the call was refused (${(error as Error).message})`
+    $.ui.log(`curator failed, nothing changed (${failure})`)
+    await logFailure($, 'curator', turn, failure, null)
+    return
+  }
+
+  const failure = await applyOutcome($, 'curator', (snapshot, stats) => applyCuratorReply(snapshot, stats, reply))
+  if (failure !== null) await logFailure($, 'curator', turn, failure, reply)
 }
 
 /** The transcript as the rebuild and the btw fallback read it: each message's role and text, no tool calls. */
@@ -336,11 +394,11 @@ async function rebuild($: EngineInterface, model: string): Promise<WorkOutcome> 
     for (const [index, chunk] of chunks.entries()) {
       const reply = await $.model.complete({
         model,
-        system: UPDATE_SYSTEM,
+        system: REBUILD_SYSTEM,
         prompt: rebuildChunkPrompt(rebuilt, chunk, index, chunks.length, turn),
         maxTokens: BACKGROUND_MAX_TOKENS,
       })
-      const outcome = applyUpdateReply(rebuilt, await read($, statsAtom), reply, turn)
+      const outcome = applyRebuildReply(rebuilt, await read($, statsAtom), reply, turn)
       await update($, statsAtom, () => outcome.stats)
       if (outcome.failure !== null) {
         await logFailure($, `rebuild part ${index + 1} of ${chunks.length}`, turn, outcome.failure, reply)
@@ -353,7 +411,7 @@ async function rebuild($: EngineInterface, model: string): Promise<WorkOutcome> 
       await update($, rebuildProgressAtom, () => ({ done: index + 1, total: chunks.length }))
     }
 
-    await changeSnapshot($, () => restoreFirstTurns(before, rebuilt))
+    await changeSnapshot($, current => keepHighestFactId(current, restoreFirstTurns(before, rebuilt)))
     await saveFiles($)
     const message = `rebuilt from ${chunks.length} chunks`
     if (!isLean(rebuilt.bearings)) return { isDone: true, message }
@@ -518,7 +576,7 @@ async function askBtw($: EngineInterface, model: string, question: string): Prom
 /** With nothing to fork (a resumed process before its first request), answer from the bearings and the last messages. */
 async function answerBtwFromBearings($: EngineInterface, model: string, question: string): Promise<void> {
   const recent = (await readTranscript($)).slice(-BTW_FALLBACK_MESSAGES)
-  const prompt = btwFallbackPrompt(question, snapshotMarkdown(await readSnapshot($)), recent)
+  const prompt = btwFallbackPrompt(question, snapshotMarkdown(await readSnapshot($), factRanking), recent)
   const reply = await $.model.complete({ model, prompt })
 
   if (reply.isAnswered) {
@@ -605,7 +663,7 @@ async function runViewCommand(
  * stub only. The CommandOutput hook draws the kept view in place of the stub's row.
  */
 async function printView($: EngineInterface, view: 'glossary' | 'bearings'): Promise<CommandRunResult> {
-  const markdown = viewSection(view, await readSnapshot($))
+  const markdown = viewSection(view, await readSnapshot($), factRanking)
   const markdownPath = await markdownPathOf($)
   let n = 0
   await update($, printsAtom, prints => {
@@ -631,7 +689,7 @@ async function openInVsCode($: EngineInterface, view: 'glossary' | 'bearings'): 
     $.ui.log(`opened ${path} in VS Code`)
     return
   }
-  $.ui.log(printedView(view, await readSnapshot($), path))
+  $.ui.log(printedView(view, await readSnapshot($), path, factRanking))
   $.ui.log(`not opened in VS Code: ${failure}`)
 }
 
@@ -705,6 +763,10 @@ function openBearings($: EngineInterface) {
 
 export const register: Register = (on, options) => {
   const model = typeof options.model === 'string' && options.model.trim() !== '' ? options.model.trim() : DEFAULT_MODEL
+  const curatorModel =
+    typeof options.curatorModel === 'string' && options.curatorModel.trim() !== '' ? options.curatorModel.trim() : DEFAULT_CURATOR_MODEL
+  factRanking = options.ranking === 'llm' ? 'llm' : 'mechanical'
+  const updateSettings: UpdateSettings = { model, curatorModel, ranking: factRanking }
 
   // -------------------------------------------------------------------------
   // Events
@@ -778,7 +840,7 @@ export const register: Register = (on, options) => {
     if (prompt.trim() !== '' || e.answer.trim() !== '') {
       const finished: TurnText = { turn, prompt, answer: e.answer }
       // A timer starts the update outside this dispatch, so the turn ends without waiting for it.
-      $.clock.after(0, () => updates.push(finished, turns => runUpdate($, model, turns)))
+      $.clock.after(0, () => updates.push(finished, turns => runUpdate($, updateSettings, turns)))
     }
     return next(e)
   })
@@ -788,11 +850,12 @@ export const register: Register = (on, options) => {
     const isMainCompaction = e.agentId === undefined && e.trigger !== 'precompute'
     if (!isMainCompaction || result.skip !== undefined || (await isOff($))) return result
 
-    const bearings = await read($, bearingsAtom)
+    const bearings = await readBearings($)
     const others = (await readOtherActiveSessions($)).map(summarize)
     if (bearings === null && others.length === 0) return result
 
-    const own = bearings === null ? '_No bearings yet._' : bearingsSections(bearings, bearings.facts)
+    const turn = await read($, turnAtom)
+    const own = bearings === null ? '_No bearings yet._' : bearingsSections(bearings, heldFactSections(factTiers(bearings, turn, factRanking)))
     await appendNote($, compactionNote(own, others, await $.clock.now()))
     return result
   })
@@ -872,14 +935,15 @@ export const register: Register = (on, options) => {
     const Input = 'Input' in elements ? elements.Input : undefined
 
     const turn = await read($, turnAtom)
-    const bearings = (await read($, bearingsAtom)) ?? emptyBearings()
+    const bearings = (await readBearings($)) ?? emptyBearings()
     const isEarlierOpen = await read($, isBearingsEarlierOpenAtom)
     const rebuildProgress = await read($, rebuildProgressAtom)
     const thread = await read($, btwAtom)
     const pendingQuestion = await read($, btwPendingQuestionAtom)
     const notice = await read($, btwNoticeAtom)
     const stats = await read($, statsAtom)
-    const { recent: recentFacts, earlier: earlierFacts } = splitByRecency(bearings.facts, turn)
+    const tiers = factTiers(bearings, turn, factRanking)
+    const earlierFacts = tiers.earlier
     const inherited = bearings.inheritedFrom
     const otherSessions = await read($, otherSessionsAtom)
     const isOthersOpen = await read($, isOtherSessionsOpenAtom)
@@ -892,7 +956,7 @@ export const register: Register = (on, options) => {
             glossary seeded from the other sessions here (newest {shortId(inherited.sessionId)}, {relativeTime(Date.parse(inherited.savedAt), now)})
           </Text>
         )}
-        <Markdown text={capText(bearingsSections(bearings, paneFactOrder(recentFacts), turn), MARKDOWN_LIMIT)} />
+        <Markdown text={capText(bearingsSections(bearings, heldFactSections(tiers), turn), MARKDOWN_LIMIT)} />
         {earlierFacts.length > 0 && (
           <Button
             key="toggle-earlier"
@@ -902,7 +966,7 @@ export const register: Register = (on, options) => {
             onPress={() => void update($, isBearingsEarlierOpenAtom, isOpen => !isOpen)}
           />
         )}
-        {earlierFacts.length > 0 && isEarlierOpen && <Markdown dimColor text={capText(factList(paneFactOrder(earlierFacts)), MARKDOWN_LIMIT)} />}
+        {earlierFacts.length > 0 && isEarlierOpen && <Markdown dimColor text={capText(earlierFactsText(earlierFacts), MARKDOWN_LIMIT)} />}
         {otherSessions.length > 0 && (
           <Button
             key="toggle-other-sessions"

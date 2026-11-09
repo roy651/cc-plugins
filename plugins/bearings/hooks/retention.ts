@@ -38,13 +38,13 @@ export function isKnown(term: string, knownTerms: readonly string[]): boolean {
 
 /**
  * Deletes the glossary entries and facts unseen for 30 turns that nobody asked to keep:
- * pinned items, items the operator or the main model added, and known terms always stay.
+ * pinned items, items the operator or the main model added, known terms and importance 3 facts always stay.
  */
 export function pruneStale(snapshot: Snapshot, currentTurn: number, knownTerms: readonly string[]): Snapshot {
   const isStale = (item: { lastSeenTurn: number }) => currentTurn - item.lastSeenTurn >= PRUNE_TURNS
   const glossary = snapshot.glossary.filter(entry => isProtected(entry) || isKnown(entry.term, knownTerms) || !isStale(entry))
   const bearings = snapshot.bearings === null
     ? null
-    : { ...snapshot.bearings, facts: snapshot.bearings.facts.filter(fact => isProtected(fact) || !isStale(fact)) }
+    : { ...snapshot.bearings, facts: snapshot.bearings.facts.filter(fact => isProtected(fact) || fact.importance === 3 || !isStale(fact)) }
   return { glossary, bearings }
 }

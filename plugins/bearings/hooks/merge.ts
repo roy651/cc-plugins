@@ -1,4 +1,7 @@
-import type { Bearings, BearingsField, Fact, GlossaryEntry, Pin, Source } from '../types'
+import type { Bearings, BearingsField, Fact, GlossaryEntry, Importance, Pin, Source, StoredFact } from '../types'
+import { extractJsonObject, factRankFrom, isProtected, isRecord, normalizeFacts, pushNewFact, rankNamesPoolFact, readImportance, REBUILD_ID_GAP } from './facts'
+
+export { isProtected }
 
 /** The two things the mod keeps, as one value the merge functions take and return. */
 export interface Snapshot {
@@ -19,9 +22,21 @@ export interface Delta {
     inProgress?: string[]
     expectedNext?: string[]
     openDecisions?: string[]
-    factsAdd?: string[]
+    factsAdd?: NewFact[]
+    /** Fact ids; an exact fact text matches too. */
     factsSeen?: string[]
+    factsReplace?: FactReplacement[]
+    factsRank?: { hold: string[]; recent: string[] }
   }
+}
+
+interface NewFact {
+  text: string
+  importance: Importance
+}
+
+interface FactReplacement extends NewFact {
+  id: string
 }
 
 const LIST_FIELDS = ['subGoals', 'doneRecently', 'inProgress', 'expectedNext', 'openDecisions'] as const
@@ -53,17 +68,13 @@ export function emptyBearings(): Bearings {
     expectedNext: [],
     openDecisions: [],
     facts: [],
+    nextFactId: 1,
     updatedAtTurn: 0,
   }
 }
 
 export function sameText(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase()
-}
-
-/** Pinned entries and entries a person or the main model added are never overwritten by the background model. */
-export function isProtected(entry: { pin: Pin; source: Source }): boolean {
-  return entry.pin !== 'none' || entry.source === 'operator' || entry.source === 'claude'
 }
 
 // ---------------------------------------------------------------------------
@@ -104,24 +115,51 @@ export function parseDelta(reply: string): Delta | { error: string } {
     if (typeof bearings.goal !== 'string') return { error: '"bearings.goal" is not a string' }
     delta.bearings.goal = bearings.goal
   }
-  for (const field of [...LIST_FIELDS, 'factsAdd', 'factsSeen'] as const) {
+  for (const field of [...LIST_FIELDS, 'factsSeen'] as const) {
     if (bearings[field] === undefined) continue
     const list = readStringList(bearings[field], `bearings.${field}`)
     if ('error' in list) return list
     delta.bearings[field] = list.list
   }
+
+  if (bearings.factsAdd !== undefined) {
+    if (!Array.isArray(bearings.factsAdd)) return { error: '"bearings.factsAdd" is not a list' }
+    delta.bearings.factsAdd = bearings.factsAdd.flatMap(readNewFact)
+  }
+  if (bearings.factsReplace !== undefined) {
+    if (!Array.isArray(bearings.factsReplace)) return { error: '"bearings.factsReplace" is not a list' }
+    delta.bearings.factsReplace = bearings.factsReplace.flatMap(readReplacement)
+  }
+  const rank = readFactsRank(bearings.factsRank)
+  if (rank !== undefined) delta.bearings.factsRank = rank
   return delta
 }
 
-/** Takes the JSON object out of a reply that may wrap it in a code fence or a sentence. */
-function extractJsonObject(reply: string): string | null {
-  const start = reply.indexOf('{')
-  const end = reply.lastIndexOf('}')
-  return start === -1 || end < start ? null : reply.slice(start, end + 1)
+/** A new fact as an object, or as a bare string (importance 1). Anything else is left out. */
+function readNewFact(item: unknown): NewFact[] {
+  if (typeof item === 'string') return item.trim() === '' ? [] : [{ text: item, importance: 1 }]
+  if (!isRecord(item) || typeof item.text !== 'string' || item.text.trim() === '') return []
+  return [{ text: item.text, importance: readImportance(item.importance) }]
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+function readReplacement(item: unknown): FactReplacement[] {
+  if (!isRecord(item) || typeof item.id !== 'string') return []
+  const id = item.id
+  return readNewFact(item).map(fact => ({ ...fact, id }))
+}
+
+/** A rank that is not two lists counts as no rank: the update's other changes still apply. */
+function readFactsRank(value: unknown): { hold: string[]; recent: string[] } | undefined {
+  if (!isRecord(value)) return undefined
+  const hold = readStringList(value.hold ?? [], 'hold')
+  const recent = readStringList(value.recent ?? [], 'recent')
+  return 'error' in hold || 'error' in recent ? undefined : { hold: hold.list.flatMap(leadingFactId), recent: recent.list.flatMap(leadingFactId) }
+}
+
+/** The id at the start of a rank entry: the model may answer `f12` or copy the form it was shown, `f12 (3): text`. */
+function leadingFactId(entry: string): string[] {
+  const id = /^\s*(f\d+)/.exec(entry)?.[1]
+  return id === undefined ? [] : [id]
 }
 
 function isTermAndMeaning(item: unknown): item is { term: string; meaning: string } {
@@ -188,22 +226,51 @@ function applyBearingsDelta(current: Bearings, delta: Delta['bearings'], turn: n
     next.repoFields = withoutField(next.repoFields, field)
   }
 
-  for (const text of delta.factsAdd ?? []) {
-    next.facts = addOrTouchFact(next.facts, text, 'auto', turn)
-  }
-  for (const text of delta.factsSeen ?? []) {
-    const existing = next.facts.find(fact => sameText(fact.text, text))
-    if (existing !== undefined) existing.lastSeenTurn = turn
+  const idsBefore = new Set(next.facts.map(fact => fact.id))
+  for (const { text, importance } of delta.factsAdd ?? []) addOrTouchFact(next, text, 'auto', turn, importance)
+  for (const seen of delta.factsSeen ?? []) touchSeenFact(next.facts, seen, turn)
+  for (const replacement of delta.factsReplace ?? []) replaceFact(next, replacement, turn)
+
+  if (delta.factsRank !== undefined && rankNamesPoolFact(delta.factsRank, next.facts)) {
+    const added = next.facts.filter(fact => !idsBefore.has(fact.id))
+    next.factRank = factRankFrom(delta.factsRank, added, turn)
   }
   return next
 }
 
-function addOrTouchFact(facts: Fact[], text: string, source: Source, turn: number): Fact[] {
-  const existing = facts.find(fact => sameText(fact.text, text))
-  if (existing === undefined) return [...facts, { text: text.trim(), lastSeenTurn: turn, pin: 'none', source }]
+/** On a working copy: adds the fact, or counts a mention of the one that already has this text. */
+function addOrTouchFact(bearings: Bearings, text: string, source: Source, turn: number, importance: Importance): void {
+  const existing = bearings.facts.find(fact => sameText(fact.text, text))
+  if (existing === undefined) {
+    pushNewFact(bearings, text, source, turn, importance)
+    return
+  }
   // The conversation restating a repo fact makes it the conversation's.
-  const nextSource = existing.source === 'repo' ? source : existing.source
-  return facts.map(fact => (fact === existing ? { ...fact, lastSeenTurn: turn, source: nextSource } : fact))
+  if (existing.source === 'repo') existing.source = source
+  existing.lastSeenTurn = turn
+  existing.mentions += 1
+}
+
+function touchSeenFact(facts: Fact[], idOrText: string, turn: number): void {
+  const existing = facts.find(fact => fact.id === idOrText) ?? facts.find(fact => sameText(fact.text, idOrText))
+  if (existing === undefined) return
+  existing.lastSeenTurn = turn
+  existing.mentions += 1
+}
+
+/** Rewrites an unprotected fact in place. A protected fact stays as it is and the new text becomes a fact of its own. */
+function replaceFact(bearings: Bearings, replacement: FactReplacement, turn: number): void {
+  const existing = bearings.facts.find(fact => fact.id === replacement.id)
+  if (existing === undefined) return
+  if (isProtected(existing)) {
+    addOrTouchFact(bearings, replacement.text, 'auto', turn, replacement.importance)
+    return
+  }
+  existing.text = replacement.text.trim()
+  existing.importance = replacement.importance
+  existing.lastSeenTurn = turn
+  // The conversation rewriting a repo fact makes it the conversation's.
+  if (existing.source === 'repo') existing.source = 'auto'
 }
 
 function withoutField(fields: BearingsField[] | undefined, field: BearingsField): BearingsField[] | undefined {
@@ -254,10 +321,8 @@ function applyScanBearings(current: Bearings, delta: Delta['bearings'], turn: nu
     markChanged(next, field, turn)
     repoFields.add(field)
   }
-  for (const text of delta.factsAdd ?? []) {
-    if (!next.facts.some(fact => sameText(fact.text, text))) {
-      next.facts = [...next.facts, { text: text.trim(), lastSeenTurn: turn, pin: 'none', source: 'repo' }]
-    }
+  for (const { text, importance } of delta.factsAdd ?? []) {
+    if (!next.facts.some(fact => sameText(fact.text, text))) pushNewFact(next, text, 'repo', turn, importance)
   }
 
   next.repoFields = [...repoFields]
@@ -278,8 +343,19 @@ export function isLean(bearings: Bearings | null): boolean {
 export function protectedOnly(snapshot: Snapshot): Snapshot {
   return {
     glossary: snapshot.glossary.filter(isProtected),
-    bearings: { ...emptyBearings(), facts: (snapshot.bearings?.facts ?? []).filter(isProtected) },
+    bearings: {
+      ...emptyBearings(),
+      facts: (snapshot.bearings?.facts ?? []).filter(isProtected),
+      nextFactId: (snapshot.bearings?.nextFactId ?? 1) + REBUILD_ID_GAP,
+    },
   }
+}
+
+/** The finished rebuild, with the highest next fact id either side reached, so no id is issued twice. */
+export function keepHighestFactId(current: Snapshot, rebuilt: Snapshot): Snapshot {
+  if (rebuilt.bearings === null) return rebuilt
+  const nextFactId = Math.max(rebuilt.bearings.nextFactId, current.bearings?.nextFactId ?? 1)
+  return { ...rebuilt, bearings: { ...rebuilt.bearings, nextFactId } }
 }
 
 /** After a rebuild, a term known before keeps the turn it was first seen in. */
@@ -306,9 +382,12 @@ export function addTerm(snapshot: Snapshot, term: string, meaning: string, sourc
 export function addFact(snapshot: Snapshot, text: string, source: Source, turn: number): Snapshot {
   const bearings = snapshot.bearings ?? emptyBearings()
   const existing = bearings.facts.find(fact => sameText(fact.text, text))
-  const facts = existing === undefined
-    ? [...bearings.facts, { text: text.trim(), lastSeenTurn: turn, pin: 'none' as Pin, source }]
-    : bearings.facts.map(fact => (fact === existing ? { ...fact, lastSeenTurn: turn, source } : fact))
+  if (existing === undefined) {
+    const next = { ...bearings }
+    pushNewFact(next, text, source, turn, 1)
+    return { ...snapshot, bearings: next }
+  }
+  const facts = bearings.facts.map(fact => (fact === existing ? { ...fact, lastSeenTurn: turn, source } : fact))
   return { ...snapshot, bearings: { ...bearings, facts } }
 }
 
@@ -337,7 +416,7 @@ export function setPin(snapshot: Snapshot, target: string, pin: Pin): { snapshot
 
 export interface ProjectPins {
   glossary: GlossaryEntry[]
-  facts: Fact[]
+  facts: StoredFact[]
 }
 
 /** The store key of one working directory's project pins. */
@@ -363,10 +442,13 @@ export function mergeProjectPins(snapshot: Snapshot, pins: ProjectPins): Snapsho
   if (snapshot.bearings === null && pins.facts.length === 0) return { glossary, bearings: null }
 
   const bearings = snapshot.bearings ?? emptyBearings()
-  let facts = bearings.facts
+  let facts: StoredFact[] = bearings.facts
   for (const pinned of pins.facts) {
-    const others = facts.filter(fact => !sameText(fact.text, pinned.text))
-    facts = [...others, { ...pinned, pin: 'project' }]
+    const inThisSession = facts.find(fact => sameText(fact.text, pinned.text))
+    const others = facts.filter(fact => fact !== inThisSession)
+    // A stored id came from another session: only an id this session already gave the fact is kept.
+    const { id: _idFromAnotherSession, ...withoutId } = pinned
+    facts = [...others, { ...withoutId, ...(inThisSession?.id === undefined ? {} : { id: inThisSession.id }), pin: 'project' }]
   }
-  return { glossary, bearings: { ...bearings, facts } }
+  return { glossary, bearings: normalizeFacts({ ...bearings, facts }) }
 }

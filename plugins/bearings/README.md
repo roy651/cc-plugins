@@ -3,7 +3,7 @@
 Bearings is a Claude Code mod that helps you regain context. It is for people who step away from a long session, or who run several sessions at once, and need to see again what the work is about. A mod is a plugin that draws extra interface inside Claude Code. This one adds a band above the prompt with two views.
 
 - **Glossary** lists the terms and ids from recent turns (acronyms, coined labels, backlog rows, gap codes) with a one-line meaning taken from the conversation. When the conversation does not state a meaning, it says so and does not guess.
-- **Bearings** shows the goal, sub-goals, what was done recently, what is in progress, what is expected next, the open decisions waiting on you, and the facts to hold.
+- **Bearings** shows the goal, sub-goals, what was done recently, what is in progress, what is expected next, the open decisions waiting on you, and the facts in view: Hold and Recent.
 
 The Bearings pane, open beside the conversation. The band with the two buttons sits above the prompt.
 
@@ -80,7 +80,17 @@ The Rebuild button in the Bearings pane (hotkey `r`) regenerates the glossary an
 
 You can also ask Claude in the conversation to add a term or a fact. Claude then calls the `add` tool (listed as `mcp__bearings__add`), and the entry appears in the panes.
 
-**Pins and the 30-turn limit.** An entry stays in the main list while it was seen in the last 30 turns. After each background update, terms and facts the background model added that have not been seen for 30 turns are deleted. Pinned entries, entries you or Claude added, and known terms are never deleted. Those that go unseen move to a collapsed "Earlier" section. A pin keeps an entry in the main list. `pin:` holds it for this session, and `pin project:` holds it in every session started in the same folder.
+**Pins and the 30-turn limit.** A glossary entry stays in the main list while it was seen in the last 30 turns. After each background update, terms and facts the background model added that have not been seen for 30 turns are deleted. Pinned entries, entries you or Claude added, known terms and importance 3 facts are never deleted. Glossary entries that go unseen move to a collapsed "Earlier" section. A pin keeps an entry in the main list. `pin:` holds it for this session, and `pin project:` holds it in every session started in the same folder.
+
+**Facts: Hold, Recent, Earlier.** Facts stay in one pool, and each turn local scoring sorts them into three views. A fact is in exactly one.
+
+- **Hold** has every pinned or hand-added fact, then the most important facts, up to 10.
+- **Recent** has the rest seen in the last 5 turns, newest first, up to 10.
+- **Earlier** has everything else. The "Show earlier facts" button opens the top 15 and says how many more are in the `.md` file.
+
+The update call gives each new fact an importance from 1 to 3. Mentions raise a fact's score and time lowers it. After compaction the session receives Hold and Recent only. The `.md` file and `/bearings print` keep all three views in full. Every 10 turns, once there are at least 15 facts, a separate call corrects importance, merges duplicates and retires what no longer matters. It never touches pinned or hand-added facts.
+
+Two options in `/config` under the plugin's options affect this. `curatorModel` picks the model for that call (default `haiku`). `ranking` is `mechanical` by default, which means local scoring. Set it to `llm` and the update call also re-ranks a shortlist of 40 facts, which costs more tokens per turn.
 
 ## Several sessions in one folder
 
@@ -105,7 +115,7 @@ Subagents do not take part. Non-interactive runs (`claude -p`, the SDK) register
 
 ## Cost and privacy
 
-After each turn, one call goes to the background model with the turn's prompt and final reply plus the current glossary and bearings. That is a few thousand tokens. The default model is `sonnet`. Change it in `/config` under the plugin's options.
+After each turn, one call goes to the background model with the turn's prompt and final reply plus the current glossary, the bearings and the facts in view. That is a few thousand tokens. The default model is `sonnet`. Change it in `/config` under the plugin's options. Every 10 turns one more call goes to the curator model.
 
 A repo scan is one call to the same model. Its input is capped near 30,000 characters of the repo's notes, git output and file list, plus the current glossary and bearings.
 

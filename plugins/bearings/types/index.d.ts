@@ -12,12 +12,33 @@ export interface GlossaryEntry {
   source: Source
 }
 
+/** 3 stays true and causes a mistake if forgotten, 2 is useful beyond the current step, 1 is a detail of the moment. */
+export type Importance = 1 | 2 | 3
+
 export interface Fact {
+  /** `f<n>`, unique in the session. */
+  id: string
   text: string
   lastSeenTurn: number
   pin: Pin
   source: Source
+  importance: Importance
+  /** How many times the fact was mentioned again after it was added. */
+  mentions: number
 }
+
+/** A fact as a file or a value written before ids, importance and mentions existed may hold it. */
+export type StoredFact = Omit<Fact, 'id' | 'importance' | 'mentions'> & Partial<Pick<Fact, 'id' | 'importance' | 'mentions'>>
+
+/** The order an update call gave the facts, with `userConfig.ranking` set to `llm`. It holds only for the update of `turn`. */
+export interface FactRank {
+  turn: number
+  hold: string[]
+  recent: string[]
+}
+
+/** Who orders the facts in view: local scoring, or the update call. */
+export type Ranking = 'mechanical' | 'llm'
 
 /** The Bearings fields a repo scan may fill: the goal and the lists (facts carry their own source). */
 export type BearingsField = 'goal' | 'subGoals' | 'doneRecently' | 'inProgress' | 'expectedNext' | 'openDecisions'
@@ -30,7 +51,12 @@ export interface Bearings {
   expectedNext: string[]
   openDecisions: string[]
   facts: Fact[]
+  /** The number of the next fact id. It only goes up, so an id is never issued twice. */
+  nextFactId: number
   updatedAtTurn: number
+  /** The turn the curator last ran on, or tried to. Unset before its first run and after a rebuild. */
+  lastCuratedTurn?: number
+  factRank?: FactRank
   inheritedFrom?: { sessionId: string; savedAt: string }
   /** Fields whose current content came from a repo scan; an update that sets a field takes it off. */
   repoFields?: BearingsField[]

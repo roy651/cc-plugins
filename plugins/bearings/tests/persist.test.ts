@@ -52,7 +52,7 @@ test('a saved session reads back whole, signature included, with the Markdown be
   const { files, access } = memoryFiles()
   const saved = savedSession('session-a', '2026-10-03T08:00:00.000Z', 'first goal')
 
-  await saveSession(access, '/f', saved, snapshotMarkdown(saved))
+  await saveSession(access, '/f', saved, snapshotMarkdown(saved, 'mechanical'))
 
   expect(await readSessionFiles(access, '/f')).toEqual([saved])
   const markdown = files.get('/f/session-a.md')?.text ?? ''

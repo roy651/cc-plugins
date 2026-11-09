@@ -11,13 +11,13 @@ const snapshot: Snapshot = {
 }
 
 test('a printed view is that view\'s part of the .md file', () => {
-  expect(printedView('glossary', snapshot, '/f/s.md')).toBe('# Glossary\n\n- **S4**: stage four (T2)\n')
-  expect(printedView('bearings', snapshot, '/f/s.md').startsWith('# Bearings\n\n## Goal\nship it')).toBe(true)
+  expect(printedView('glossary', snapshot, '/f/s.md', 'mechanical')).toBe('# Glossary\n\n- **S4**: stage four (T2)\n')
+  expect(printedView('bearings', snapshot, '/f/s.md', 'mechanical').startsWith('# Bearings\n\n## Goal\nship it')).toBe(true)
 })
 
 test('a long printed view is cut, its last line naming the .md file', () => {
   const long: Snapshot = { ...snapshot, bearings: { ...emptyBearings(), goal: 'g'.repeat(20_000) } }
-  const text = printedView('bearings', long, '/f/s.md')
+  const text = printedView('bearings', long, '/f/s.md', 'mechanical')
   expect(text.length).toBeLessThan(PRINTED_VIEW_LIMIT + 200)
   expect(text.split('\n').at(-1)).toBe(`... cut at ${PRINTED_VIEW_LIMIT} characters. The rest is in /f/s.md`)
 })

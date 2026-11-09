@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { GlossaryEntry } from '../types'
-import { bearingsSections, glossaryLine } from '../hooks/markdown'
+import { factTiers } from '../hooks/facts'
+import { bearingsSections, glossaryLine, heldFactSections } from '../hooks/markdown'
 import { applyDelta, applyScanDelta, emptyBearings, isLean } from '../hooks/merge'
 import type { Delta, Snapshot } from '../hooks/merge'
 import { conversationText, transcriptChunks } from '../hooks/prompts'
@@ -48,7 +49,7 @@ describe('repo items', () => {
     const before: Snapshot = { glossary: [], bearings: { ...emptyBearings(), inProgress: ['from the conversation'] } }
     const scanned = applyScanDelta(before, delta(
       { upsert: [{ term: 'ReTraj', meaning: 'the trajectory re-ranking stage' }] },
-      { goal: 'ship the plugin', inProgress: ['repo says this'], expectedNext: ['publish'], factsAdd: ['the marketplace is cc-plugins'] },
+      { goal: 'ship the plugin', inProgress: ['repo says this'], expectedNext: ['publish'], factsAdd: [{ text: 'the marketplace is cc-plugins', importance: 1 }] },
     ), 0)
 
     expect(scanned.glossary[0]?.source).toBe('repo')
@@ -58,7 +59,7 @@ describe('repo items', () => {
     expect(scanned.bearings?.repoFields?.sort()).toEqual(['expectedNext', 'goal'])
 
     expect(glossaryLine(scanned.glossary[0]!)).toBe('- **ReTraj**: the trajectory re-ranking stage (from repo)')
-    const markdown = bearingsSections(scanned.bearings!, scanned.bearings!.facts)
+    const markdown = bearingsSections(scanned.bearings!, heldFactSections(factTiers(scanned.bearings!, 0, 'mechanical')))
     expect(markdown).toContain('## Goal\nship the plugin (from repo)')
     expect(markdown).toContain('- publish (from repo)')
     expect(markdown).toContain('- from the conversation\n')
@@ -68,11 +69,11 @@ describe('repo items', () => {
   test('a later update replaces repo items; the replaced ones lose the mark', () => {
     const scanned = applyScanDelta({ glossary: [], bearings: null }, delta(
       { upsert: [{ term: 'ReTraj', meaning: 'repo meaning' }] },
-      { goal: 'repo goal', factsAdd: ['repo fact'] },
+      { goal: 'repo goal', factsAdd: [{ text: 'repo fact', importance: 1 }] },
     ), 0)
     const updated = applyDelta(scanned, delta(
       { upsert: [{ term: 'ReTraj', meaning: 'what the conversation says' }] },
-      { goal: 'conversation goal', factsAdd: ['repo fact'] },
+      { goal: 'conversation goal', factsAdd: [{ text: 'repo fact', importance: 1 }] },
     ), 4)
 
     expect(updated.glossary[0]).toEqual(entry('ReTraj', 'what the conversation says', { firstTurn: 0, lastSeenTurn: 4 }))

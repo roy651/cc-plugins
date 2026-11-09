@@ -6,7 +6,7 @@ import type { Snapshot } from '../hooks/merge'
 
 const base: Snapshot = {
   glossary: [{ term: 'FMA', meaning: 'failure mechanism analyzer', firstTurn: 1, lastSeenTurn: 1, pin: 'none', source: 'auto' }],
-  bearings: { ...emptyBearings(), facts: [{ text: 'Temperature is 0.1 for runs', lastSeenTurn: 1, pin: 'none', source: 'auto' }] },
+  bearings: { ...emptyBearings(), facts: [{ id: 'f0', text: 'Temperature is 0.1 for runs', lastSeenTurn: 1, pin: 'none', source: 'auto', importance: 1, mentions: 0 }] },
 }
 
 describe('parsePaneCommand', () => {
@@ -58,7 +58,9 @@ describe('applyPaneCommand', () => {
     expect(added.snapshot.glossary[0]).toEqual({ term: 'FMA', meaning: 'my own words', firstTurn: 1, lastSeenTurn: 5, pin: 'none', source: 'operator' })
 
     const fact = applyPaneCommand(base, { kind: 'fact', text: 'ssh to the VM is allowed' }, 5)
-    expect(fact.snapshot.bearings?.facts[1]).toEqual({ text: 'ssh to the VM is allowed', lastSeenTurn: 5, pin: 'none', source: 'operator' })
+    expect(fact.snapshot.bearings?.facts[1]).toEqual({
+      id: 'f1', text: 'ssh to the VM is allowed', lastSeenTurn: 5, pin: 'none', source: 'operator', importance: 1, mentions: 0,
+    })
   })
 })
 

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { GlossaryEntry } from '../types'
-import { applyDelta, applyScanDelta, emptyBearings, parseDelta, protectedOnly, restoreFirstTurns } from '../hooks/merge'
+import { applyDelta, applyScanDelta, dropOpenDecision, emptyBearings, parseDelta, protectedOnly, restoreFirstTurns } from '../hooks/merge'
 import type { Delta, Snapshot } from '../hooks/merge'
 
 function entry(term: string, meaning: string, extra: Partial<GlossaryEntry> = {}): GlossaryEntry {
@@ -115,6 +115,65 @@ describe('rebuild helpers', () => {
   })
 })
 
+describe('dropped open decisions', () => {
+  const withDecisions: Snapshot = {
+    glossary: [],
+    bearings: { ...emptyBearings(), openDecisions: ['Question A?', 'Question B?'], changedAtTurn: { openDecisions: 3 } },
+  }
+
+  function dropA(): Snapshot {
+    return dropOpenDecision(withDecisions, 'question a', 6).snapshot
+  }
+
+  test('a reply already in flight that restates the old list does not bring a dropped decision back or move the changed turn', () => {
+    const afterReply = applyDelta(dropA(), delta({}, { openDecisions: ['question a?', 'Question B?'] }), 7)
+    expect(afterReply.bearings?.openDecisions).toEqual(['Question B?'])
+    expect(afterReply.bearings?.changedAtTurn?.openDecisions).toBe(6)
+  })
+
+  test('a reply that really changes the list still records the change, without the dropped item', () => {
+    const afterReply = applyDelta(dropA(), delta({}, { openDecisions: ['Question A?', 'Question B?', 'Question C?'] }), 7)
+    expect(afterReply.bearings?.openDecisions).toEqual(['Question B?', 'Question C?'])
+    expect(afterReply.bearings?.changedAtTurn?.openDecisions).toBe(7)
+  })
+
+  test('dropped decisions are taken out before the cap, so they do not use up its room', () => {
+    const eight = Array.from({ length: 8 }, (_, index) => `item ${index + 1}`)
+    const dropped: Snapshot = { glossary: [], bearings: { ...emptyBearings(), droppedDecisions: ['item 8'] } }
+    expect(applyDelta(dropped, delta({}, { openDecisions: eight }), 2).bearings?.openDecisions).toEqual(eight.slice(0, 7))
+  })
+
+  test('a rebuild carries the dropped decisions, so it does not bring one back', () => {
+    const start = protectedOnly(dropA())
+    expect(start.bearings?.droppedDecisions).toEqual(['Question A?'])
+    expect(applyDelta(start, delta({}, { openDecisions: ['Question A?', 'Question B?'] }), 9).bearings?.openDecisions).toEqual(['Question B?'])
+  })
+
+  test('a scan leaves out dropped decisions, and fills nothing when only dropped ones remain', () => {
+    const dropped: Snapshot = { glossary: [], bearings: { ...emptyBearings(), droppedDecisions: ['Question A?'] } }
+    expect(applyScanDelta(dropped, delta({}, { openDecisions: ['question a?', 'Question C?'] }), 0).bearings?.openDecisions).toEqual(['Question C?'])
+
+    const onlyDropped = applyScanDelta(dropped, delta({}, { openDecisions: ['Question A?'] }), 4).bearings
+    expect(onlyDropped?.openDecisions).toEqual([])
+    expect(onlyDropped?.changedAtTurn?.openDecisions).toBeUndefined()
+    expect(onlyDropped?.repoFields).toEqual([])
+  })
+
+  test('the last 20 dropped texts are kept', () => {
+    const twentyFive = Array.from({ length: 25 }, (_, index) => `question ${String(index + 1).padStart(2, '0')}`)
+    let snapshot: Snapshot = { glossary: [], bearings: { ...emptyBearings(), openDecisions: twentyFive } }
+    for (const question of twentyFive) snapshot = dropOpenDecision(snapshot, question, 5).snapshot
+    expect(snapshot.bearings?.droppedDecisions).toEqual(twentyFive.slice(5))
+  })
+
+  test('a dropped list is no longer the repo\'s, so a later scan cannot overwrite it', () => {
+    const fromRepo: Snapshot = { glossary: [], bearings: { ...emptyBearings(), openDecisions: ['Question A?', 'Question B?'], repoFields: ['openDecisions', 'goal'] } }
+    const dropped = dropOpenDecision(fromRepo, 'question a', 6).snapshot
+    expect(dropped.bearings?.repoFields).toEqual(['goal'])
+    expect(applyScanDelta(dropped, delta({}, { openDecisions: ['A new repo question'] }), 7).bearings?.openDecisions).toEqual(['Question B?'])
+  })
+})
+
 describe('list caps', () => {
   const twelve = Array.from({ length: 12 }, (_, index) => `item ${index + 1}`)
 
@@ -123,6 +182,17 @@ describe('list caps', () => {
     expect(result.bearings?.subGoals).toEqual(twelve.slice(2))
     expect(result.bearings?.expectedNext.length).toBe(10)
     expect(result.bearings?.doneRecently.length).toBe(12)
+  })
+
+  test('open decisions keep their newest 7', () => {
+    const result = applyDelta({ glossary: [], bearings: null }, delta({}, { openDecisions: twelve }), 3)
+    expect(result.bearings?.openDecisions).toEqual(twelve.slice(5))
+  })
+
+  test('open decisions restated unchanged keep the turn they last changed', () => {
+    const first = applyDelta({ glossary: [], bearings: null }, delta({}, { openDecisions: ['one question'] }), 3)
+    const restated = applyDelta(first, delta({}, { openDecisions: ['one question'] }), 8)
+    expect(restated.bearings?.changedAtTurn?.openDecisions).toBe(3)
   })
 
   test('a scan is capped the same way', () => {

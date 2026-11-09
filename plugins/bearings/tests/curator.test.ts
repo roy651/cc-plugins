@@ -257,11 +257,11 @@ describe('what the pane, the file and the compaction note show', () => {
 
     const pane = await mountBearings($)
     const main = (await pane.find({ type: 'Markdown' }))?.text ?? ''
-    const holdPart = main.slice(main.indexOf('## Hold'), main.indexOf('## Recent'))
-    const recentPart = main.slice(main.indexOf('## Recent'))
+    const holdPart = main.slice(main.indexOf('## Key facts'), main.indexOf('## Recent facts'))
+    const recentPart = main.slice(main.indexOf('## Recent facts'))
     expect(holdPart.split('\n- ').length - 1).toBe(HOLD_LIMIT)
     expect(recentPart.split('\n- ').length - 1).toBe(RECENT_LIMIT)
-    expect(main).not.toContain('## Earlier')
+    expect(main).not.toContain('## Earlier facts')
     expect(main).not.toContain('## Facts to hold')
 
     const earlierCount = 40 + 2 + 3
@@ -280,8 +280,8 @@ describe('what the pane, the file and the compaction note show', () => {
     await parts.clock.settle()
 
     const main = (await (await mountBearings($)).find({ type: 'Markdown' }))?.text ?? ''
-    expect(main).toContain('## Recent\n- just one detail')
-    expect(main).not.toContain('## Hold')
+    expect(main).toContain('## Recent facts\n- just one detail')
+    expect(main).not.toContain('## Key facts')
   })
 
   test('the .md file holds every fact, under all three headings', async ($, on) => {
@@ -292,7 +292,7 @@ describe('what the pane, the file and the compaction note show', () => {
     }
 
     const file = lastMarkdown(parts.written)
-    for (const heading of ['## Hold', '## Recent', '## Earlier']) expect(file).toContain(heading)
+    for (const heading of ['## Key facts', '## Recent facts', '## Earlier facts']) expect(file).toContain(heading)
     for (const text of [...factTexts(40, 1000), ...factTexts(HOLD_LIMIT + 2, 2000), ...factTexts(RECENT_LIMIT + 3, 3000)]) {
       expect(file).toContain(`- ${text}`)
     }
@@ -309,9 +309,9 @@ describe('what the pane, the file and the compaction note show', () => {
     await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'the conversation so far', toolUses: [] }] } as never)
     expect(parts.appended.length).toBe(1)
     const note = parts.appended[0]!
-    expect(note).toContain('## Hold')
-    expect(note).toContain('## Recent')
-    expect(note).not.toContain('## Earlier')
+    expect(note).toContain('## Key facts')
+    expect(note).toContain('## Recent facts')
+    expect(note).not.toContain('## Earlier facts')
     expect(note).not.toContain('plain words number 1000 here')
   })
 })
@@ -329,8 +329,8 @@ describe('the ranking flag', () => {
 
     expect(parts.calls[0]?.system).toBe(RANKING_UPDATE_SYSTEM)
     const main = (await (await mountBearings($)).find({ type: 'Markdown' }))?.text ?? ''
-    expect(main).toContain('## Hold\n- plain words number 3 here\n\n## Recent\n- plain words number 1 here')
-    expect(lastMarkdown(parts.written)).toContain('## Hold\n- plain words number 3 here\n\n## Recent\n- plain words number 1 here')
+    expect(main).toContain('## Key facts\n- plain words number 3 here\n\n## Recent facts\n- plain words number 1 here')
+    expect(lastMarkdown(parts.written)).toContain('## Key facts\n- plain words number 3 here\n\n## Recent facts\n- plain words number 1 here')
   })
 
   test('mechanical: a rank stored by an earlier run is ignored in the pane and the file', async ($, on) => {
@@ -345,8 +345,8 @@ describe('the ranking flag', () => {
     await $.tool.call({ tool: 'mcp__bearings__add', term: 'T', meaning: 'forces a save' })
 
     const main = (await (await mountBearings($)).find({ type: 'Markdown' }))?.text ?? ''
-    expect(main).toContain('## Hold\n- the scored fact')
-    expect(lastMarkdown(parts.written)).toContain('## Hold\n- the scored fact')
+    expect(main).toContain('## Key facts\n- the scored fact')
+    expect(lastMarkdown(parts.written)).toContain('## Key facts\n- the scored fact')
   })
 
   test('llm: a turn whose reply has no rank falls back to mechanical', { options: { ranking: 'llm' } }, async ($, on) => {
@@ -358,8 +358,8 @@ describe('the ranking flag', () => {
     }
 
     const main = (await (await mountBearings($)).find({ type: 'Markdown' }))?.text ?? ''
-    expect(main).not.toContain('## Hold')
-    expect(main).toContain('## Recent\n')
+    expect(main).not.toContain('## Key facts')
+    expect(main).toContain('## Recent facts\n')
   })
 
   test('llm: a fact added in the same reply as the rank is placed by its importance', { options: { ranking: 'llm' } }, async ($, on) => {
@@ -374,7 +374,7 @@ describe('the ranking flag', () => {
     await parts.clock.settle()
 
     const main = (await (await mountBearings($)).find({ type: 'Markdown' }))?.text ?? ''
-    expect(main).toContain('## Hold\n- a new limit\n- plain words number 1 here\n\n## Recent\n- a new detail\n- plain words number 2 here')
+    expect(main).toContain('## Key facts\n- a new limit\n- plain words number 1 here\n\n## Recent facts\n- a new detail\n- plain words number 2 here')
   })
 
   test('an unknown flag value means mechanical: the prompt does not ask for a rank and a rank is not applied', { options: { ranking: 'magic' } }, async ($, on) => {
@@ -400,6 +400,24 @@ describe('the ranking flag', () => {
     expect(parts.calls[0]?.system).toBe(UPDATE_SYSTEM)
     expect(lastSaved(parts.written).factRank).toBeUndefined()
   })
+})
+
+describe('the drop command', () => {
+  const decisionsReply = JSON.stringify({ bearings: { openDecisions: ['Should we ship today?', 'Which model do we use?'] } })
+
+  for (const [paneId, inputKey] of [['bearings-map', 'btw-input'], ['bearings-glossary', 'glossary-input']] as const) {
+    test(`typed in ${paneId}, it removes the matching open decision and saves`, async ($, on) => {
+      const parts = world(on, [decisionsReply])
+      await finishTurn($, 't1')
+      await parts.clock.settle()
+
+      const pane = await $.ui.mount({ plugin: 'bearings', surface: 'terminal', component: 'Pane', requestId: paneId, props: PANE_PROPS })
+      await pane.input({ key: inputKey, text: 'drop: should we' })
+      await parts.clock.settle()
+
+      expect(lastSaved(parts.written).openDecisions).toEqual(['Which model do we use?'])
+    })
+  }
 })
 
 describe('old data through the engine', () => {

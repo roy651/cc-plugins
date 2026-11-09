@@ -42,12 +42,22 @@ interface FactReplacement extends NewFact {
 const LIST_FIELDS = ['subGoals', 'doneRecently', 'inProgress', 'expectedNext', 'openDecisions'] as const
 
 /** The most items these lists keep. The prompt asks the model to stay under it, and the merge enforces it. */
-export const LIST_CAPS: Partial<Record<BearingsField, number>> = { subGoals: 10, expectedNext: 10 }
+export const LIST_CAPS: Partial<Record<BearingsField, number>> = { subGoals: 10, expectedNext: 10, openDecisions: 7 }
 
 /** Lists go newest last, so a list over its cap keeps its last items. */
 export function capList(field: BearingsField, list: string[]): string[] {
   const cap = LIST_CAPS[field]
   return cap === undefined || list.length <= cap ? list : list.slice(-cap)
+}
+
+/** How many dropped open decisions are remembered. */
+const DROPPED_DECISIONS_KEPT = 20
+
+/** A list from a model's reply, ready to store: without the open decisions the operator dropped, then capped. */
+function listFromModel(field: BearingsField, list: string[], bearings: Bearings): string[] {
+  const dropped = bearings.droppedDecisions ?? []
+  const kept = field === 'openDecisions' ? list.filter(item => !dropped.some(text => sameText(text, item))) : list
+  return capList(field, kept)
 }
 
 function sameList(a: string[], b: string[]): boolean {
@@ -219,7 +229,7 @@ function applyBearingsDelta(current: Bearings, delta: Delta['bearings'], turn: n
   for (const field of LIST_FIELDS) {
     const list = delta[field]
     if (list === undefined) continue
-    const capped = capList(field, list)
+    const capped = listFromModel(field, list, current)
     // A list restated unchanged keeps the turn it last changed.
     if (!sameList(capped, current[field])) markChanged(next, field, turn)
     next[field] = capped
@@ -316,8 +326,10 @@ function applyScanBearings(current: Bearings, delta: Delta['bearings'], turn: nu
   }
   for (const field of LIST_FIELDS) {
     const list = delta[field]
-    if (list === undefined || list.length === 0 || !mayFill(field, current[field].length === 0)) continue
-    next[field] = capList(field, list)
+    if (list === undefined) continue
+    const kept = listFromModel(field, list, current)
+    if (kept.length === 0 || !mayFill(field, current[field].length === 0)) continue
+    next[field] = kept
     markChanged(next, field, turn)
     repoFields.add(field)
   }
@@ -347,6 +359,7 @@ export function protectedOnly(snapshot: Snapshot): Snapshot {
       ...emptyBearings(),
       facts: (snapshot.bearings?.facts ?? []).filter(isProtected),
       nextFactId: (snapshot.bearings?.nextFactId ?? 1) + REBUILD_ID_GAP,
+      droppedDecisions: snapshot.bearings?.droppedDecisions,
     },
   }
 }
@@ -409,6 +422,26 @@ export function setPin(snapshot: Snapshot, target: string, pin: Pin): { snapshot
 
   const facts = bearings.facts.map(one => (one === fact ? { ...one, pin } : one))
   return { snapshot: { ...snapshot, bearings: { ...bearings, facts } }, matched: 'fact' }
+}
+
+/**
+ * Removes the first open decision that starts with `target`, ignoring case, and remembers its text
+ * so a reply already on its way cannot restate it. `matched` says whether one did.
+ */
+export function dropOpenDecision(snapshot: Snapshot, target: string, turn: number): { snapshot: Snapshot; matched: boolean } {
+  const bearings = snapshot.bearings
+  const wanted = target.trim().toLowerCase()
+  const index = bearings?.openDecisions.findIndex(question => question.toLowerCase().startsWith(wanted)) ?? -1
+  if (bearings === null || index === -1) return { snapshot, matched: false }
+
+  const next: Bearings = {
+    ...bearings,
+    openDecisions: bearings.openDecisions.filter((_, position) => position !== index),
+    droppedDecisions: [...(bearings.droppedDecisions ?? []), bearings.openDecisions[index]!].slice(-DROPPED_DECISIONS_KEPT),
+    repoFields: withoutField(bearings.repoFields, 'openDecisions'),
+  }
+  markChanged(next, 'openDecisions', turn)
+  return { snapshot: { ...snapshot, bearings: next }, matched: true }
 }
 
 // ---------------------------------------------------------------------------

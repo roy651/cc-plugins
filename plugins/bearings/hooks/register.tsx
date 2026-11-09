@@ -986,7 +986,7 @@ export const register: Register = (on, options) => {
         {Input !== undefined && (
           <Input
             key="btw-input"
-            placeholder="btw: a side question (or add: / fact: / pin: commands)"
+            placeholder="btw: a side question (or add: / fact: / pin: / drop: commands)"
             submitLabel="ask"
             onSubmit={value => void submitPaneInput($, model, value, true)}
           />

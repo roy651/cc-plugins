@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { applyKnownCommand, applyPaneCommand, applyToolAdd, parsePaneCommand, toolKnownCommand } from '../hooks/commands'
+import { applyKnownCommand, applyPaneCommand, applyToolAdd, COMMAND_HELP, parsePaneCommand, toolKnownCommand } from '../hooks/commands'
 import { emptyBearings, mergeProjectPins, projectPinsOf } from '../hooks/merge'
 import type { Snapshot } from '../hooks/merge'
 
@@ -20,6 +20,12 @@ describe('parsePaneCommand', () => {
     expect(parsePaneCommand('pin: FMA')).toEqual({ kind: 'pin', target: 'FMA', pin: 'session' })
     expect(parsePaneCommand('pin project: FMA')).toEqual({ kind: 'pin', target: 'FMA', pin: 'project' })
     expect(parsePaneCommand('unpin: FMA')).toEqual({ kind: 'unpin', target: 'FMA' })
+  })
+
+  test('reads drop: lines, and the help names the command', () => {
+    expect(parsePaneCommand('drop: Should we ship')).toEqual({ kind: 'drop', target: 'Should we ship' })
+    expect(parsePaneCommand('  DROP:x ')).toEqual({ kind: 'drop', target: 'x' })
+    expect(COMMAND_HELP).toContain('"drop: <start of text>"')
   })
 
   test('anything else is no command', () => {
@@ -51,6 +57,33 @@ describe('applyPaneCommand', () => {
     const result = applyPaneCommand(base, { kind: 'pin', target: 'nothing like it', pin: 'session' }, 2)
     expect(result.snapshot).toEqual(base)
     expect(result.message).toContain('No term or fact')
+  })
+
+  const withDecisions: Snapshot = {
+    glossary: [],
+    bearings: { ...emptyBearings(), openDecisions: ['Which model do we use?', 'Should we ship today?', 'Should we ship the docs?'] },
+  }
+
+  test('drop: removes the first open decision that starts with the text, ignoring case, and records the change', () => {
+    const result = applyPaneCommand(withDecisions, { kind: 'drop', target: 'SHOULD WE' }, 6)
+    expect(result.snapshot.bearings?.openDecisions).toEqual(['Which model do we use?', 'Should we ship the docs?'])
+    expect(result.snapshot.bearings?.changedAtTurn?.openDecisions).toBe(6)
+    expect(result.message).toBe('Dropped "SHOULD WE".')
+    expect(withDecisions.bearings?.openDecisions.length).toBe(3)
+  })
+
+  test('drop: matches only the start of a decision', () => {
+    const result = applyPaneCommand(withDecisions, { kind: 'drop', target: 'ship today' }, 6)
+    expect(result.snapshot).toBe(withDecisions)
+  })
+
+  test('drop: that matches nothing says so and changes nothing', () => {
+    const result = applyPaneCommand(withDecisions, { kind: 'drop', target: 'nothing like it' }, 6)
+    expect(result.snapshot).toBe(withDecisions)
+    expect(result.message).toBe('No open decision matches "nothing like it".')
+
+    const empty: Snapshot = { glossary: [], bearings: null }
+    expect(applyPaneCommand(empty, { kind: 'drop', target: 'x' }, 6).snapshot).toBe(empty)
   })
 
   test('add: and fact: are marked as the operator\'s', () => {

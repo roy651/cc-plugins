@@ -50,6 +50,8 @@ export interface Bearings {
   inProgress: string[]
   expectedNext: string[]
   openDecisions: string[]
+  /** The last 20 open decisions the operator dropped: a model reply cannot bring these back. */
+  droppedDecisions?: string[]
   facts: Fact[]
   /** The number of the next fact id. It only goes up, so an id is never issued twice. */
   nextFactId: number

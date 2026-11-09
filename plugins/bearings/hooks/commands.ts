@@ -1,14 +1,15 @@
-import { addFact, addTerm, sameText, setPin } from './merge'
+import { addFact, addTerm, dropOpenDecision, sameText, setPin } from './merge'
 import type { Snapshot } from './merge'
 import { isKnown } from './retention'
 import type { GlossaryEntry, Pin } from '../types'
 
-/** A command that edits the glossary or the facts. */
+/** A command that edits the glossary, the facts or the open decisions. */
 export type SnapshotCommand =
   | { kind: 'add'; term: string; meaning: string }
   | { kind: 'fact'; text: string }
   | { kind: 'pin'; target: string; pin: 'session' | 'project' }
   | { kind: 'unpin'; target: string }
+  | { kind: 'drop'; target: string }
 
 /** A command that marks a term the operator already knows, or takes the mark off. */
 export type KnownCommand = { kind: 'known' | 'unknown'; term: string }
@@ -18,7 +19,7 @@ export type PaneCommand = SnapshotCommand | KnownCommand
 
 export const COMMAND_HELP =
   'Commands: "add: <term> = <meaning>", "fact: <text>", "pin: <term>", "pin project: <term>", "unpin: <term>", ' +
-  '"known: <term>", "unknown: <term>".'
+  '"known: <term>", "unknown: <term>", "drop: <start of text>".'
 
 /** The store key of one working directory's known terms. */
 export function knownTermsKey(cwd: string): string {
@@ -49,6 +50,9 @@ export function parsePaneCommand(line: string): PaneCommand | null {
 
   const unknown = /^unknown:\s*(.+)$/i.exec(text)
   if (unknown) return { kind: 'unknown', term: unknown[1]!.trim() }
+
+  const drop = /^drop:\s*(.+)$/i.exec(text)
+  if (drop) return { kind: 'drop', target: drop[1]!.trim() }
 
   return null
 }
@@ -99,6 +103,10 @@ export function applyPaneCommand(snapshot: Snapshot, command: SnapshotCommand, t
         ? `No term or fact matches "${command.target}".`
         : `${command.kind === 'pin' ? `Pinned (${command.pin})` : 'Unpinned'} "${command.target}".`
       return { snapshot: result.snapshot, message }
+    }
+    case 'drop': {
+      const result = dropOpenDecision(snapshot, command.target, turn)
+      return { snapshot: result.snapshot, message: result.matched ? `Dropped "${command.target}".` : `No open decision matches "${command.target}".` }
     }
   }
 }

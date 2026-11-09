@@ -50,12 +50,12 @@ function factSection(title: string, facts: Fact[]): string[] {
 
 /** What the pane and the compaction note show of the facts. A tier with no facts is left out. */
 export function heldFactSections(tiers: FactTiers): string[] {
-  return [...factSection('Hold', tiers.hold), ...factSection('Recent', tiers.recent)]
+  return [...factSection('Key facts', tiers.hold), ...factSection('Recent facts', tiers.recent)]
 }
 
 /** What the .md file and a print show: every tier, in full. */
 function allFactSections(tiers: FactTiers): string[] {
-  return [...heldFactSections(tiers), ...factSection('Earlier', tiers.earlier)]
+  return [...heldFactSections(tiers), ...factSection('Earlier facts', tiers.earlier)]
 }
 
 /** The pane's Earlier list: the top of it, and how many more the .md file holds. */

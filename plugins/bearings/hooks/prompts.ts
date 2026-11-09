@@ -52,8 +52,10 @@ const FACTS_ADD_AND_SEEN_RULE = `- "factsAdd": new facts, each with its importan
 const FACTS_REPLACE_RULE = `- "factsReplace": a known fact the new turns correct or sharpen: its id, the new text and its importance.`
 const FACTS_RANK_RULE = `- "factsRank": the ids from "facts" to keep in view, most useful first: at most ${HOLD_LIMIT} in "hold" for what to keep in mind throughout, at most ${RECENT_LIMIT} in "recent" for what matters right now. Always include "factsRank" in every reply, as the exception to "Include any other field only when it changes": restate it even when the order has not changed.`
 
-/** The system prompt of the calls that read the conversation. Only the fact fields they may answer differ. */
-function conversationSystem(factFields: string[], factRules: string[]): string {
+const OPEN_DECISIONS_RULE = `- Always include "openDecisions" as well, as the exception to "Include any other field only when it changes": restate it every turn, with at most 7 items. Drop a question once it is answered, overtaken by events or no longer relevant, and keep it while it is still waiting on the operator.`
+
+/** The system prompt of the calls that read the conversation. Only the fact fields and the rules specific to the call differ. */
+function conversationSystem(factFields: string[], callRules: string[]): string {
   return `You keep a glossary and a map of where the work stands for a person who follows a long working conversation between an operator and an AI assistant, and who often steps away.
 
 You receive the current glossary's terms (names only, without their meanings) and the map as JSON, and the newest turn or turns of the conversation. Answer with one JSON object and nothing else: a delta in this shape.
@@ -64,16 +66,16 @@ ${deltaShape(factFields)}
 - "seen": known terms the new turns mention without changing their meaning.
 - In "bearings", always include "inProgress", restated from the newest turns even when it has not changed. Include any other field only when it changes. A list you include replaces the old list whole.
 - The map's "facts" holds the facts most in view, each as \`f12 (3): text\` (id, importance, text), and "olderFactCount" counts the rest.
-${factRules.join('\n')}
+${callRules.join('\n')}
 
 ${RULES}`
 }
 
 const UPDATE_FACT_FIELDS = [FACTS_ADD_FIELD, FACTS_SEEN_FIELD, FACTS_REPLACE_FIELD]
-const UPDATE_FACT_RULES = [FACTS_ADD_AND_SEEN_RULE, FACTS_REPLACE_RULE]
+const UPDATE_RULES = [OPEN_DECISIONS_RULE, FACTS_ADD_AND_SEEN_RULE, FACTS_REPLACE_RULE]
 
-export const UPDATE_SYSTEM = conversationSystem(UPDATE_FACT_FIELDS, UPDATE_FACT_RULES)
-export const RANKING_UPDATE_SYSTEM = conversationSystem([...UPDATE_FACT_FIELDS, FACTS_RANK_FIELD], [...UPDATE_FACT_RULES, FACTS_RANK_RULE])
+export const UPDATE_SYSTEM = conversationSystem(UPDATE_FACT_FIELDS, UPDATE_RULES)
+export const RANKING_UPDATE_SYSTEM = conversationSystem([...UPDATE_FACT_FIELDS, FACTS_RANK_FIELD], [...UPDATE_RULES, FACTS_RANK_RULE])
 export const REBUILD_SYSTEM = conversationSystem([FACTS_ADD_FIELD, FACTS_SEEN_FIELD], [FACTS_ADD_AND_SEEN_RULE])
 
 export function updateSystem(ranking: Ranking): string {

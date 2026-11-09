@@ -3,7 +3,7 @@
 Bearings is a Claude Code mod that helps you regain context. It is for people who step away from a long session, or who run several sessions at once, and need to see again what the work is about. A mod is a plugin that draws extra interface inside Claude Code. This one adds a band above the prompt with two views.
 
 - **Glossary** lists the terms and ids from recent turns (acronyms, coined labels, backlog rows, gap codes) with a one-line meaning taken from the conversation. When the conversation does not state a meaning, it says so and does not guess.
-- **Bearings** shows the goal, sub-goals, what was done recently, what is in progress, what is expected next, the open decisions waiting on you, and the facts in view: Hold and Recent.
+- **Bearings** shows the goal, sub-goals, what was done recently, what is in progress, what is expected next, the open decisions waiting on you, and the facts in view: Key facts and Recent facts.
 
 The Bearings pane, open beside the conversation. The band with the two buttons sits above the prompt.
 
@@ -70,9 +70,10 @@ pin project: <term>
 unpin: <term>
 known: <term>
 unknown: <term>
+drop: <start of text>
 ```
 
-`add:` adds or replaces a glossary entry. `fact:` adds a fact to Bearings. `pin:` and `unpin:` take a term or the start of a fact text. `known:` marks a term you already know: it stays in the glossary and is still updated, but the Glossary pane hides it behind a count line, and it is never pruned. Known terms are kept per folder. `unknown:` shows the term again. Any other line typed in the Glossary pane shows the list of commands. Any other line typed in the Bearings pane is a btw question.
+`add:` adds or replaces a glossary entry. `fact:` adds a fact to Bearings. `pin:` and `unpin:` take a term or the start of a fact text. `known:` marks a term you already know: it stays in the glossary and is still updated, but the Glossary pane hides it behind a count line, and it is never pruned. Known terms are kept per folder. `unknown:` shows the term again. `drop:` removes the first open decision that starts with the given text. Any other line typed in the Glossary pane shows the list of commands. Any other line typed in the Bearings pane is a btw question.
 
 A btw question is a side question about the conversation. It is answered briefly in the pane and never enters the main conversation. The last 20 are kept.
 
@@ -82,13 +83,13 @@ You can also ask Claude in the conversation to add a term or a fact. Claude then
 
 **Pins and the 30-turn limit.** A glossary entry stays in the main list while it was seen in the last 30 turns. After each background update, terms and facts the background model added that have not been seen for 30 turns are deleted. Pinned entries, entries you or Claude added, known terms and importance 3 facts are never deleted. Glossary entries that go unseen move to a collapsed "Earlier" section. A pin keeps an entry in the main list. `pin:` holds it for this session, and `pin project:` holds it in every session started in the same folder.
 
-**Facts: Hold, Recent, Earlier.** Facts stay in one pool, and each turn local scoring sorts them into three views. A fact is in exactly one.
+**Key facts, Recent facts, Earlier facts.** Facts stay in one pool, and each turn local scoring sorts them into three views. A fact is in exactly one.
 
-- **Hold** has every pinned or hand-added fact, then the most important facts, up to 10.
-- **Recent** has the rest seen in the last 5 turns, newest first, up to 10.
-- **Earlier** has everything else. The "Show earlier facts" button opens the top 15 and says how many more are in the `.md` file.
+- **Key facts** has every pinned or hand-added fact, then the most important facts, up to 10.
+- **Recent facts** has the rest seen in the last 5 turns, newest first, up to 10.
+- **Earlier facts** has everything else. The "Show earlier facts" button opens the top 15 and says how many more are in the `.md` file.
 
-The update call gives each new fact an importance from 1 to 3. Mentions raise a fact's score and time lowers it. After compaction the session receives Hold and Recent only. The `.md` file and `/bearings print` keep all three views in full. Every 10 turns, once there are at least 15 facts, a separate call corrects importance, merges duplicates and retires what no longer matters. It never touches pinned or hand-added facts.
+The update call gives each new fact an importance from 1 to 3. Mentions raise a fact's score and time lowers it. After compaction the session receives Key facts and Recent facts only. The `.md` file and `/bearings print` keep all three views in full. Every 10 turns, once there are at least 15 facts, a separate call corrects importance, merges duplicates and retires what no longer matters. It never touches pinned or hand-added facts.
 
 Two options in `/config` under the plugin's options affect this. `curatorModel` picks the model for that call (default `haiku`). `ranking` is `mechanical` by default, which means local scoring. Set it to `llm` and the update call also re-ranks a shortlist of 40 facts, which costs more tokens per turn.
 

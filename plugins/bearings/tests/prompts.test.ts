@@ -56,6 +56,14 @@ test('only the llm prompt requires factsRank, in every reply, as an exception to
   for (const system of [UPDATE_SYSTEM, REBUILD_SYSTEM, SCAN_SYSTEM]) expect(system).not.toContain('factsRank')
 })
 
+test('the update prompts require openDecisions every turn and say when to drop a question; rebuild and scan do not', () => {
+  for (const system of [UPDATE_SYSTEM, RANKING_UPDATE_SYSTEM]) {
+    expect(system).toContain('Always include "openDecisions" as well, as the exception to "Include any other field only when it changes"')
+    expect(system).toContain('Drop a question once it is answered, overtaken by events or no longer relevant, and keep it while it is still waiting on the operator')
+  }
+  for (const system of [REBUILD_SYSTEM, SCAN_SYSTEM]) expect(system).not.toContain('Always include "openDecisions"')
+})
+
 test('the importance scale is in every prompt that adds facts', () => {
   for (const system of [UPDATE_SYSTEM, RANKING_UPDATE_SYSTEM, REBUILD_SYSTEM, SCAN_SYSTEM]) {
     expect(system).toContain('Most new facts are 1')

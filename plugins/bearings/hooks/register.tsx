@@ -10,7 +10,7 @@ import {
 } from './commands'
 import type { KnownCommand, ToolAddInput } from './commands'
 import {
-  bearingsSections, capText, factList, glossaryList, MARKDOWN_LIMIT, printDrawing, printedView, printNumberOf, printStub,
+  bearingsSections, capText, factList, glossaryList, MARKDOWN_LIMIT, paneFactOrder, printDrawing, printedView, printNumberOf, printStub,
   relativeTime, snapshotMarkdown, viewSection,
 } from './markdown'
 import {
@@ -892,7 +892,7 @@ export const register: Register = (on, options) => {
             glossary seeded from the other sessions here (newest {shortId(inherited.sessionId)}, {relativeTime(Date.parse(inherited.savedAt), now)})
           </Text>
         )}
-        <Markdown text={capText(bearingsSections(bearings, recentFacts, turn), MARKDOWN_LIMIT)} />
+        <Markdown text={capText(bearingsSections(bearings, paneFactOrder(recentFacts), turn), MARKDOWN_LIMIT)} />
         {earlierFacts.length > 0 && (
           <Button
             key="toggle-earlier"
@@ -902,7 +902,7 @@ export const register: Register = (on, options) => {
             onPress={() => void update($, isBearingsEarlierOpenAtom, isOpen => !isOpen)}
           />
         )}
-        {earlierFacts.length > 0 && isEarlierOpen && <Markdown dimColor text={capText(factList(earlierFacts), MARKDOWN_LIMIT)} />}
+        {earlierFacts.length > 0 && isEarlierOpen && <Markdown dimColor text={capText(factList(paneFactOrder(earlierFacts)), MARKDOWN_LIMIT)} />}
         {otherSessions.length > 0 && (
           <Button
             key="toggle-other-sessions"

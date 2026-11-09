@@ -42,6 +42,12 @@ export function factList(facts: Fact[]): string {
   return facts.map(fact => `- ${fact.text}${fact.source === 'repo' ? FROM_REPO : ''}${pinMark(fact.pin)}`).join('\n')
 }
 
+/** The pane's order: pinned first, then newest seen first (later added first on a tie), so a cut at the end drops the oldest. */
+export function paneFactOrder(facts: Fact[]): Fact[] {
+  const newestFirst = [...facts].reverse().sort((a, b) => b.lastSeenTurn - a.lastSeenTurn)
+  return [...newestFirst.filter(fact => fact.pin !== 'none'), ...newestFirst.filter(fact => fact.pin === 'none')]
+}
+
 /** "changed 3 turns ago" style, for a field that last changed at `changedAt`. */
 export function changedAgo(changedAt: number, currentTurn: number): string {
   const turns = currentTurn - changedAt

@@ -89,9 +89,9 @@ You can also ask Claude in the conversation to add a term or a fact. Claude then
 - **Recent facts** has the rest seen in the last 5 turns, newest first, up to 10.
 - **Earlier facts** has everything else. The "Show earlier facts" button opens the top 15 and says how many more are in the `.md` file.
 
-The update call gives each new fact an importance from 1 to 3. Mentions raise a fact's score and time lowers it. After compaction the session receives Key facts and Recent facts only. The `.md` file and `/bearings print` keep all three views in full. Every 10 turns, once there are at least 15 facts, a separate call corrects importance, merges duplicates and retires what no longer matters. It never touches pinned or hand-added facts.
+The update call gives each new fact an importance from 1 to 3. Mentions raise a fact's score and time lowers it. After compaction the session receives Key facts and Recent facts only. The `.md` file and `/bearings print` keep all three views in full. Every 5 turns, once there are at least 15 facts, a separate call corrects importance, merges duplicates and retires what no longer matters. It never touches pinned or hand-added facts.
 
-Two options in `/config` under the plugin's options affect this. `curatorModel` picks the model for that call (default `haiku`). `ranking` is `mechanical` by default, which means local scoring. Set it to `llm` and the update call also re-ranks a shortlist of 40 facts, which costs more tokens per turn.
+Two options in `/config` under the plugin's options affect this. `curatorModel` picks the model for that call (default `sonnet`). `ranking` is `mechanical` by default, which means local scoring. Set it to `llm` and the update call also re-ranks a shortlist of 40 facts, which costs more tokens per turn.
 
 ## Several sessions in one folder
 
@@ -116,7 +116,7 @@ Subagents do not take part. Non-interactive runs (`claude -p`, the SDK) register
 
 ## Cost and privacy
 
-After each turn, one call goes to the background model with the turn's prompt and final reply plus the current glossary, the bearings and the facts in view. That is a few thousand tokens. The default model is `sonnet`. Change it in `/config` under the plugin's options. Every 10 turns one more call goes to the curator model.
+After each turn, one call goes to the background model with the turn's prompt and final reply plus the current glossary, the bearings and the facts in view. That is a few thousand tokens. The default model is `sonnet`. Change it in `/config` under the plugin's options. Every 5 turns one more call goes to the curator model. Background calls run at medium effort.
 
 A repo scan is one call to the same model. Its input is capped near 30,000 characters of the repo's notes, git output and file list, plus the current glossary and bearings.
 

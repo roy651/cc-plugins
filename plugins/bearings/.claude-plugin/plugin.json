@@ -16,8 +16,8 @@
     "curatorModel": {
       "type": "string",
       "title": "Curator model",
-      "description": "The model that corrects the facts' importance every 10 turns: an alias (sonnet, haiku) or a model id.",
-      "default": "haiku"
+      "description": "The model that corrects the facts' importance every 5 turns: an alias (sonnet, haiku) or a model id.",
+      "default": "sonnet"
     },
     "ranking": {
       "type": "string",

@@ -45,7 +45,7 @@ import type { ReplyOutcome } from './update'
 // are plain functions.
 
 const DEFAULT_MODEL = 'sonnet'
-const DEFAULT_CURATOR_MODEL = 'haiku'
+const DEFAULT_CURATOR_MODEL = 'sonnet'
 const GLOSSARY_PANE = 'bearings-glossary'
 const BEARINGS_PANE = 'bearings-map'
 
@@ -58,6 +58,8 @@ const MARKDOWN_PLACEHOLDER = '# Bearings\n\nNo bearings yet. They appear after t
 const OTHER_SESSIONS_POLL_MS = 60_000
 /** The reply cap of every background call (update, rebuild, scan). */
 const BACKGROUND_MAX_TOKENS = 8000
+/** The thinking effort of every background call (update, curator, rebuild, scan). */
+const BACKGROUND_EFFORT = 'medium'
 
 // Session state, declared in PluginState (types/index.d.ts).
 const glossaryAtom = atom({ plugin: 'bearings', key: 'glossary' } as const, [] as GlossaryEntry[])
@@ -318,6 +320,7 @@ async function runUpdate($: EngineInterface, settings: UpdateSettings, turns: Tu
       system: updateSystem(settings.ranking),
       prompt: updatePrompt(before, turns, latestTurn, settings.ranking),
       maxTokens: BACKGROUND_MAX_TOKENS,
+      effort: BACKGROUND_EFFORT,
     })
 
     const shownFacts = before.bearings === null ? [] : factsForUpdate(before.bearings, latestTurn, settings.ranking)
@@ -351,6 +354,7 @@ async function runCuratorIfDue($: EngineInterface, curatorModel: string, turn: n
       system: CURATOR_SYSTEM,
       prompt: curatorPrompt(bearings, turn),
       maxTokens: BACKGROUND_MAX_TOKENS,
+      effort: BACKGROUND_EFFORT,
     })
   } catch (error) {
     // The engine rejects a call it refuses to send, such as a blocked `curatorModel`.
@@ -397,6 +401,7 @@ async function rebuild($: EngineInterface, model: string): Promise<WorkOutcome> 
         system: REBUILD_SYSTEM,
         prompt: rebuildChunkPrompt(rebuilt, chunk, index, chunks.length, turn),
         maxTokens: BACKGROUND_MAX_TOKENS,
+        effort: BACKGROUND_EFFORT,
       })
       const outcome = applyRebuildReply(rebuilt, await read($, statsAtom), reply, turn)
       await update($, statsAtom, () => outcome.stats)
@@ -512,6 +517,7 @@ async function scanRepo($: EngineInterface, model: string): Promise<WorkOutcome>
       system: SCAN_SYSTEM,
       prompt: scanPrompt(await readSnapshot($), sources, await read($, turnAtom)),
       maxTokens: BACKGROUND_MAX_TOKENS,
+      effort: BACKGROUND_EFFORT,
     })
     const turn = await read($, turnAtom)
     const outcome = applyScanReply(await readSnapshot($), await read($, statsAtom), reply, turn)

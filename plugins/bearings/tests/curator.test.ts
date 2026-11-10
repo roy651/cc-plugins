@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import type { Bearings, StoredFact } from '../types'
-import { CURATOR_MIN_POOL, CURATOR_SYSTEM, EARLIER_SHOWN, HOLD_LIMIT, RECENT_LIMIT } from '../hooks/facts'
+import { CURATOR_EVERY, CURATOR_MIN_POOL, CURATOR_SYSTEM, EARLIER_SHOWN, HOLD_LIMIT, RECENT_LIMIT } from '../hooks/facts'
 import { emptyBearings } from '../hooks/merge'
 import { RANKING_UPDATE_SYSTEM, UPDATE_SYSTEM } from '../hooks/prompts'
 import { emptyStats } from '../hooks/update'
@@ -24,6 +24,7 @@ interface ModelCall {
   model: string | undefined
   system: string | undefined
   prompt: string
+  effort: string | undefined
 }
 
 /** A session with HOME set: model calls answered with `replies` in order, files recorded, `files` readable in the bearings folder. */
@@ -52,7 +53,7 @@ function world(on: On, replies: string[], files: Record<string, unknown> = {}, i
     return { value: undefined }
   })
   on('model.complete', ($, e) => {
-    calls.push({ model: e.model, system: e.system, prompt: e.prompt })
+    calls.push({ model: e.model, system: e.system, prompt: e.prompt, effort: e.effort })
     if (isCuratorRefused && e.system === CURATOR_SYSTEM) throw new Error('the engine refused the model name')
     return { value: { isAnswered: true, text: replies[calls.length - 1] ?? '{}', usage: USAGE } }
   })
@@ -105,11 +106,12 @@ describe('when the curator runs', () => {
     expect(lastSaved(written).lastCuratedTurn).toBe(1)
   })
 
-  test('its default model is haiku', async ($, on) => {
+  test('its default model is sonnet, and both calls run at medium effort', async ($, on) => {
     const { calls, clock } = world(on, [addFactsReply(factTexts(CURATOR_MIN_POOL)), '{}'])
     await finishTurn($, 't1')
     await clock.settle()
-    expect(calls[1]?.model).toBe('haiku')
+    expect(calls[1]?.model).toBe('sonnet')
+    expect(calls.map(call => call.effort)).toEqual(['medium', 'medium'])
   })
 
   test('it does not run below the minimum pool', async ($, on) => {
@@ -119,15 +121,15 @@ describe('when the curator runs', () => {
     expect(calls.length).toBe(1)
   })
 
-  test('after a run it waits 10 turns', async ($, on) => {
+  test('after a run it waits 5 turns', async ($, on) => {
     const { calls, clock } = world(on, [addFactsReply(factTexts(CURATOR_MIN_POOL)), '{}'])
-    for (let turn = 1; turn <= 11; turn++) {
+    for (let turn = 1; turn <= 6; turn++) {
       await finishTurn($, `t${turn}`)
       await clock.settle()
     }
     expect(calls.filter(call => call.system === CURATOR_SYSTEM).length).toBe(2)
-    // One update per turn and a curator at turns 1 and 11.
-    expect(calls.length).toBe(13)
+    // One update per turn and a curator at turns 1 and 6.
+    expect(calls.length).toBe(8)
   })
 })
 
@@ -157,8 +159,9 @@ describe('applying the curator', () => {
     ] } })
     const seenReply = JSON.stringify({ bearings: { factsSeen: ['f15', 'f15'] } })
     const mergeReply = JSON.stringify({ merge: [{ keep: 'f1', drop: ['f15'] }] })
-    const { clock, written } = world(on, [firstReply, '{}', seenReply, ...Array(9).fill('{}'), mergeReply])
-    for (let turn = 1; turn <= 11; turn++) {
+    // Updates for turns 3 to 1 + CURATOR_EVERY, then the second curator call answers with the merge.
+    const { clock, written } = world(on, [firstReply, '{}', seenReply, ...Array(CURATOR_EVERY - 1).fill('{}'), mergeReply])
+    for (let turn = 1; turn <= 1 + CURATOR_EVERY; turn++) {
       await finishTurn($, `t${turn}`)
       await clock.settle()
     }
@@ -243,13 +246,15 @@ describe('applying the curator', () => {
 describe('what the pane, the file and the compaction note show', () => {
   // Turn 1 adds what is past the Recent window by turn 7. Turn 7 adds more importance 3 facts than Hold takes and more importance 1 than Recent takes.
   const firstReply = addFactsReply(factTexts(40, 1000))
+  // Calls in order: turn 1 update and curator, updates for turns 2 to 6, the curator at turn 6, then turn 7's update.
+  const replies = [firstReply, '{}', '{}', '{}', '{}', '{}', '{}', '{}']
   const secondReply = JSON.stringify({ bearings: { factsAdd: [
     ...factTexts(HOLD_LIMIT + 2, 2000).map(text => ({ text, importance: 3 })),
     ...factTexts(RECENT_LIMIT + 3, 3000).map(text => ({ text, importance: 1 })),
   ] } })
 
   test('the pane shows Hold and Recent at their limits; the Earlier button opens its top and says how many more the file has', async ($, on) => {
-    const parts = world(on, [firstReply, '{}', '{}', '{}', '{}', '{}', '{}', secondReply])
+    const parts = world(on, [...replies, secondReply])
     for (let turn = 1; turn <= 7; turn++) {
       await finishTurn($, `t${turn}`)
       await parts.clock.settle()
@@ -285,7 +290,7 @@ describe('what the pane, the file and the compaction note show', () => {
   })
 
   test('the .md file holds every fact, under all three headings', async ($, on) => {
-    const parts = world(on, [firstReply, '{}', '{}', '{}', '{}', '{}', '{}', secondReply])
+    const parts = world(on, [...replies, secondReply])
     for (let turn = 1; turn <= 7; turn++) {
       await finishTurn($, `t${turn}`)
       await parts.clock.settle()
@@ -299,7 +304,7 @@ describe('what the pane, the file and the compaction note show', () => {
   })
 
   test('the compaction note holds only Hold and Recent', async ($, on) => {
-    const parts = world(on, [firstReply, '{}', '{}', '{}', '{}', '{}', '{}', secondReply])
+    const parts = world(on, [...replies, secondReply])
     on('session.compact', ($, e) => ({ messages: e.messages }))
     for (let turn = 1; turn <= 7; turn++) {
       await finishTurn($, `t${turn}`)
